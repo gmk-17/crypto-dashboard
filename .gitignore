@@ -1,0 +1,10 @@
+# the trading bot lives beside the dashboard and must never be published
+rsi-trader/
+
+# local serve root (symlink to index.html) and session files
+serve/
+.claude/
+
+# api probe output
+*.json
+.DS_Store

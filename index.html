@@ -1,0 +1,1049 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Crypto Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.17/dist/plot.umd.min.js"></script>
+<style>
+:root{
+  color-scheme: light;
+  --bg:#f6f8fa; --panel:#ffffff; --panel2:#f2f5f9; --bd:#d8dee6;
+  --fg:#1c2128; --mut:#5b6674; --dim:#8b96a8;
+  --up:#1a7f45; --down:#d12c31; --acc:#2f6fe4; --acc2:#8250df; --warn:#b4700f;
+  --r:12px; --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);
+  font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+  -webkit-text-size-adjust:100%;}
+a{color:var(--acc)}
+
+/* ---------- shell ---------- */
+header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(12px);border-bottom:1px solid var(--bd)}
+.hrow{display:flex;align-items:center;gap:10px;padding:10px 14px;flex-wrap:wrap}
+.brand{font-weight:650;letter-spacing:-.2px;font-size:15px;margin-right:auto}
+.brand small{display:block;font-weight:400;color:var(--dim);font-size:11px;letter-spacing:0}
+.tabs{display:flex;gap:4px;background:var(--panel2);padding:3px;border-radius:9px;border:1px solid var(--bd)}
+.tab{appearance:none;border:0;background:transparent;color:var(--mut);font:inherit;font-weight:550;
+  font-size:13px;padding:6px 13px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.tab[aria-selected="true"]{background:var(--panel);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.btn{appearance:none;border:1px solid var(--bd);background:var(--panel2);color:var(--mut);
+  font:inherit;font-size:12px;padding:6px 11px;border-radius:8px;cursor:pointer}
+.btn:hover{color:var(--fg);border-color:var(--dim)}
+.btn:disabled{opacity:.5;cursor:default}
+main{padding:14px;max-width:1500px;margin:0 auto}
+.page[hidden]{display:none}
+
+/* ---------- tiles ---------- */
+.tiles{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px}
+.tile{background:var(--panel);border:1px solid var(--bd);border-radius:var(--r);padding:12px 13px}
+.tile .k{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.tile .v{font-size:21px;font-weight:640;margin-top:5px;font-variant-numeric:tabular-nums;letter-spacing:-.4px}
+.tile .s{font-size:12px;margin-top:2px;font-variant-numeric:tabular-nums}
+
+/* ---------- panels ---------- */
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.panel{background:var(--panel);border:1px solid var(--bd);border-radius:var(--r);padding:13px;overflow:hidden}
+.panel.wide{grid-column:1/-1}
+.ph{display:flex;align-items:baseline;gap:8px;margin-bottom:2px;flex-wrap:wrap}
+.ph h3{margin:0;font-size:14px;font-weight:620;letter-spacing:-.2px}
+.ph .src{margin-left:auto;font-size:10px;color:var(--dim);font-family:var(--mono)}
+.sub{font-size:11.5px;color:var(--mut);margin:0 0 10px}
+.note{font-size:11px;color:var(--warn);margin-top:8px;display:flex;gap:5px;align-items:flex-start}
+.chart{min-height:40px;overflow-x:auto}
+.chart svg{max-width:100%;height:auto;display:block}
+/* Plot returns a <figure> when a legend is present; the UA default
+   margin:1em 40px silently shrinks the chart by 80px. */
+.chart figure{margin:0;max-width:100%}
+.chart figure>div{color:var(--mut);font-size:11px;margin:0 0 6px;
+  display:flex;flex-wrap:wrap;gap:4px 12px}
+.state{color:var(--dim);font-size:12px;padding:22px 0;text-align:center}
+.state.err{color:var(--down)}
+.skel{height:150px;border-radius:8px;background:linear-gradient(90deg,var(--panel2) 25%,var(--bd) 50%,var(--panel2) 75%);
+  background-size:200% 100%;animation:sh 1.3s infinite}
+@keyframes sh{to{background-position:-200% 0}}
+
+/* ---------- table ---------- */
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+th{text-align:right;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);
+  font-weight:600;padding:7px 9px;border-bottom:1px solid var(--bd);position:sticky;top:0;background:var(--panel)}
+th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:var(--panel);z-index:1}
+td{padding:8px 9px;border-bottom:1px solid color-mix(in srgb,var(--bd) 55%,transparent);text-align:right}
+tbody tr:last-child td{border-bottom:0}
+.sym{font-weight:640}.rank{color:var(--dim);margin-right:7px;font-size:11px}
+.up{color:var(--up)}.down{color:var(--down)}.na{color:var(--dim)}
+
+/* ---------- dune ---------- */
+.frm{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px}
+.fld{display:flex;flex-direction:column;gap:4px;flex:1;min-width:140px}
+.fld label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);font-weight:600}
+.fld input{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;
+  color:var(--fg);font:inherit;font-size:13px;width:100%}
+.fld input:focus{outline:none;border-color:var(--acc)}
+.pill{display:inline-block;font-size:10px;padding:2px 7px;border-radius:99px;border:1px solid var(--bd);color:var(--mut)}
+.pill.ok{color:var(--up);border-color:color-mix(in srgb,var(--up) 40%,transparent)}
+footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;line-height:1.7}
+
+@media(max-width:640px){
+  main{padding:10px}
+  .grid{grid-template-columns:1fr;gap:10px}
+  .tiles{grid-template-columns:repeat(2,1fr);gap:8px}
+  .tile .v{font-size:18px}
+  .hrow{padding:9px 11px;gap:8px}
+  .brand{font-size:14px;width:100%;margin-bottom:2px}
+  .tab{padding:6px 11px;font-size:12.5px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <div class="brand">Crypto Dashboard<small id="stamp">loading…</small></div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="t1" aria-selected="true"  onclick="showPage(1)">Market</button>
+      <button class="tab" role="tab" id="t2" aria-selected="false" onclick="showPage(2)">On-chain</button>
+      <button class="tab" role="tab" id="t3" aria-selected="false" onclick="showPage(3)">Rates</button>
+    </div>
+    <button class="btn" id="refresh" onclick="boot(true)">Refresh</button>
+  </div>
+</header>
+<main>
+  <section class="page" id="page1"></section>
+  <section class="page" id="page2" hidden></section>
+  <section class="page" id="page3" hidden></section>
+</main>
+<footer>
+  Sources: CoinGecko · Binance · DefiLlama · Coin Metrics Community · Dune (optional)<br>
+  Single file, no server. All data fetched live in your browser.
+</footer>
+<script>
+/* ============================================================
+   core: fetch, cache, format, panel framework
+   ============================================================ */
+const CG='https://api.coingecko.com/api/v3',
+      LL='https://api.llama.fi',
+      SC='https://stablecoins.llama.fi',
+      BN='https://api.binance.com/api/v3',
+      CM='https://community-api.coinmetrics.io/v4';
+
+const TTL=10*60*1000;               // 10 min cache
+/* Bump CACHE_VER whenever a loader's OUTPUT SHAPE or ordering changes —
+   otherwise a stale localStorage entry keeps serving the old shape after an
+   edit, which looks exactly like the code change not working. */
+const CACHE_VER=3, CK='cdc'+CACHE_VER+':';
+const mem=new Map();
+/* drop caches written by any earlier version, plus the legacy un-versioned
+   cd: cache keys. cd:dune / cd:duneq / cd:page are settings, not cache. */
+const KEEP=new Set(['cd:dune','cd:duneq','cd:page']);
+try{ Object.keys(localStorage)
+  .filter(k=>(/^cdc\d+:/.test(k)&&!k.startsWith(CK))
+          || (k.startsWith('cd:')&&!KEEP.has(k)))
+  .forEach(k=>localStorage.removeItem(k)); }catch{}
+
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+/* Tiles fetch alongside the charts, so a transient rate limit could leave a tile
+   dead at "—" while the panel below it renders fine. One delayed retry fixes the
+   mismatch, since cache() never keeps a rejected promise. */
+const retrying=(fn,ms=6000)=>fn().catch(()=>sleep(ms).then(fn));
+
+async function jfetch(url,{timeout=45000,headers}={}){
+  const c=new AbortController(), t=setTimeout(()=>c.abort(),timeout);
+  try{
+    const r=await fetch(url,{signal:c.signal,headers});
+    if(!r.ok){ let d=''; try{d=(await r.text()).slice(0,120)}catch{}
+      throw new Error(`HTTP ${r.status}${d?' — '+d:''}`); }
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
+/* CoinGecko's keyless tier rate-limits aggressively, and its 429 reply carries
+   NO Access-Control-Allow-Origin — so the browser cannot read the status or the
+   Retry-After header and surfaces only an opaque "Failed to fetch". Retry with
+   backoff, then say what almost certainly happened instead of guessing. */
+/* A full refresh now makes ~6 CoinGecko calls (two for the market universes,
+   global, two stablecoin supply charts, the futures filter list). Fired at once
+   they trip the keyless limit, so CoinGecko requests are queued one at a time
+   with a gap. Everything else still runs fully in parallel. */
+let cgChain=Promise.resolve();
+const CG_GAP=1200;
+function cgQueue(fn){
+  const run=cgChain.then(fn);
+  cgChain=run.catch(()=>{}).then(()=>sleep(CG_GAP));
+  return run;
+}
+
+async function jget(url,opts={}){
+  const cg=url.startsWith(CG);
+  const tries=cg?3:2, waits=cg?[4000,10000]:[1500];
+  let last;
+  for(let i=0;i<tries;i++){
+    try{ return await (cg?cgQueue(()=>jfetch(url,opts)):jfetch(url,opts)); }
+    catch(e){
+      last=e;
+      if(i<tries-1){ await sleep(waits[Math.min(i,waits.length-1)]); continue; }
+    }
+  }
+  if(cg&&/Failed to fetch|NetworkError|Load failed/i.test(last?.message||''))
+    throw new Error('CoinGecko rate limit (keyless tier) — wait a minute, '
+      +'or add a demo key to raise it');
+  throw last;
+}
+/* cache DERIVED series only (never the multi-MB raw payloads) */
+function cache(key,fn,force){
+  if(!force&&mem.has(key)) return mem.get(key);
+  if(!force){
+    try{ const r=JSON.parse(localStorage.getItem(CK+key)||'null');
+      if(r&&Date.now()-r.t<TTL){ const p=Promise.resolve(r.v); mem.set(key,p); return p; } }catch{}
+  }
+  const p=fn().then(v=>{
+    try{ localStorage.setItem(CK+key,JSON.stringify({t:Date.now(),v})); }catch{}
+    return v;
+  }).catch(e=>{ mem.delete(key); throw e; });
+  mem.set(key,p); return p;
+}
+
+const nf=(n,d=2)=>n==null||!isFinite(n)?'—':n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+function usd(n){ if(n==null||!isFinite(n))return'—';
+  const a=Math.abs(n);
+  if(a>=1e12)return'$'+(n/1e12).toFixed(2)+'T'; if(a>=1e9)return'$'+(n/1e9).toFixed(2)+'B';
+  if(a>=1e6)return'$'+(n/1e6).toFixed(2)+'M'; if(a>=1e3)return'$'+(n/1e3).toFixed(1)+'K';
+  return'$'+n.toFixed(2); }
+function price(n){ if(n==null)return'—';
+  return '$'+(n>=1000?n.toLocaleString('en-US',{maximumFractionDigits:0})
+       : n>=1?n.toFixed(2) : n.toFixed(4)); }
+function cnt(n){ if(n==null||!isFinite(n))return'—';
+  const a=Math.abs(n);
+  if(a>=1e9)return(n/1e9).toFixed(2)+'B'; if(a>=1e6)return(n/1e6).toFixed(2)+'M';
+  if(a>=1e3)return(n/1e3).toFixed(1)+'K'; return String(Math.round(n)); }
+const pct=n=>n==null||!isFinite(n)?'—':(n>=0?'+':'')+n.toFixed(1)+'%';
+const cls=n=>n==null||!isFinite(n)?'na':n>=0?'up':'down';
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+/* panel scaffold: renders header + skeleton, then calls draw() */
+function panel(host,{title,sub,src,wide,lazy}={}){
+  const el=document.createElement('div');
+  el.className='panel'+(wide?' wide':'');
+  el.innerHTML=`<div class="ph"><h3>${title}</h3>${src?`<span class="src">${src}</span>`:''}</div>
+    ${sub?`<p class="sub">${sub}</p>`:''}<div class="chart"><div class="skel"></div></div>`;
+  host.appendChild(el);
+  const body=el.querySelector('.chart');
+  return {
+    el, body,
+    set(node){ body.innerHTML=''; body.appendChild(node); },
+    msg(t,isErr){ body.innerHTML=`<div class="state${isErr?' err':''}">${t}</div>`; },
+    /* idempotent: a panel can be re-drawn on resize / tab switch */
+    note(t){ el.querySelectorAll(':scope > .note').forEach(n=>n.remove());
+             const n=document.createElement('div'); n.className='note';
+             n.innerHTML='<span>&#9888;</span><span>'+t+'</span>'; el.appendChild(n); }
+  };
+}
+/* run a panel's async draw with unified error handling.
+   Panels are registered so they can be re-drawn once their real width is
+   known: a chart built while its tab is hidden measures 0px wide. */
+const REG=[];
+async function fill(p,fn){
+  if(!REG.includes(p)){ p._fn=fn; REG.push(p); }
+  try{ const n=await fn(p); if(n){ p.set(n); p._w=cw(p.body); } }
+  catch(e){ p.msg('Could not load — '+(e.message||e),true); p._w=0; }
+}
+function redrawVisible(){
+  for(const p of REG){
+    if(!p.el.isConnected||!p._fn) continue;
+    if(!p.el.offsetParent) continue;              // hidden tab
+    if(!measurable(p.body)) continue;             // width not trustworthy yet
+    const w=cw(p.body);
+    if(!p._w||Math.abs(w-p._w)>16) fill(p,p._fn);
+  }
+}
+/* responsive chart width */
+function cw(el,max=1400){
+  let w=0;
+  for(let n=el;n&&!w;n=n.parentElement) w=n.getBoundingClientRect().width;
+  if(w<100){                       // hidden tab or unrendered pane: measurement is junk
+    const vp=document.documentElement.clientWidth||360;
+    w=Math.min(max,Math.max(300,vp-(vp<640?20:56)));
+  }
+  return Math.max(260,Math.min(max,Math.floor(w)));
+}
+/* true only when the element is genuinely laid out */
+function measurable(el){
+  return el.isConnected && el.getBoundingClientRect().width>100;
+}
+const isNarrow=()=>window.innerWidth<640;
+
+/* shared Plot defaults so every chart reads as one system */
+function plotBase(el,extra={}){
+  return Object.assign({
+    width:cw(el), marginLeft:isNarrow()?46:58, marginRight:10,
+    marginBottom:isNarrow()?34:30, marginTop:12,
+    style:{background:'transparent',color:css('--mut'),fontSize:isNarrow()?'10px':'11px'},
+  },extra);
+}
+const PAGES=[1,2,3];
+function showPage(n){
+  for(const i of PAGES){
+    document.getElementById('page'+i).hidden=n!==i;
+    document.getElementById('t'+i).setAttribute('aria-selected',n===i);
+  }
+  try{localStorage.setItem('cd:page',n)}catch{}
+  window.scrollTo(0,0);
+  if(n===2) page2Lazy();
+  if(n===3) page3Lazy();
+  requestAnimationFrame(()=>requestAnimationFrame(redrawVisible));
+}
+</script>
+<script>
+/* ============================================================
+   loaders
+   ============================================================ */
+/* Requested additions to the main table. Ids verified against CoinGecko:
+   DYDX is 'dydx-chain' (rank ~261); the legacy 'dydx' is the old ethDYDX. */
+const MAIN_IDS=['cardano','avalanche-2','filecoin','aave','uniswap','sui',
+                'polkadot','arbitrum','near','dydx-chain','optimism','chainlink'];
+/* The stablecoin section. BUSD is 'binance-usd' — wound down by Paxos, so it
+   sits near rank 640 with almost no volume, far outside any top-250 fetch. */
+const STABLE_IDS=['tether','usd-coin','ethena-usde','binance-usd','dai','usd1-wlfi'];
+const STABLE_ID=new Set(STABLE_IDS);
+const STABLE=new Set(['USDT','USDC','USDE','DAI','FDUSD','USDS','PYUSD',
+                      'TUSD','USD1','BUSD','RLUSD','USDF']);
+const EXCL_ID=new Set(['figure-heloc','weth','solv-btc','rain']);
+const EXCL_KW=['wrapped','staked','-peg-','heloc'];
+const isDeriv=c=>EXCL_ID.has(c.id)||EXCL_KW.some(k=>c.id.includes(k));
+
+const loadMarkets=f=>cache('markets',async()=>{
+  const pc='&price_change_percentage=24h,30d,1y';
+  /* Two calls: the dynamic majors, plus an explicit id list so tokens outside
+     the top 30 (FIL, ARB, OP, DYDX, BUSD) are still fetched. */
+  const [top,named]=await Promise.all([
+    jget(`${CG}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=30&page=1`+pc),
+    jget(`${CG}/coins/markets?vs_currency=usd&ids=${[...MAIN_IDS,...STABLE_IDS].join(',')}`+pc)
+  ]);
+  const norm=c=>({
+    id:c.id, sym:c.symbol.toUpperCase(), name:c.name,
+    price:c.current_price, mcap:c.market_cap, vol:c.total_volume,
+    d1:c.price_change_percentage_24h_in_currency,
+    d30:c.price_change_percentage_30d_in_currency,
+    d365:c.price_change_percentage_1y_in_currency,
+    ath:c.ath, athPct:c.ath_change_percentage, athDate:c.ath_date,
+    peg:c.current_price==null?null:(c.current_price-1)*100
+  });
+  const seen=new Map();
+  for(const c of [...top,...named]) if(!isDeriv(c)) seen.set(c.id,norm(c));
+  const bycap=(a,b)=>(b.mcap||0)-(a.mcap||0);
+
+  const stables=STABLE_IDS.map(id=>seen.get(id)).filter(Boolean).sort(bycap);
+  const majors=[...seen.values()]
+    .filter(a=>!STABLE_ID.has(a.id)&&!STABLE.has(a.sym))
+    .sort(bycap);
+  /* top 10 majors by cap, then the explicitly requested tokens, deduped */
+  const keep=new Map(majors.slice(0,10).map(a=>[a.id,a]));
+  for(const id of MAIN_IDS){ const a=seen.get(id); if(a) keep.set(id,a); }
+  return {main:[...keep.values()].sort(bycap), stables};
+},f);
+
+const loadGlobal=f=>cache('global',async()=>{
+  const d=(await jget(`${CG}/global`)).data;
+  return {mcap:d.total_market_cap.usd, vol:d.total_volume.usd,
+          dom:d.market_cap_percentage, chg:d.market_cap_change_percentage_24h_usd};
+},f);
+
+/* Binance weekly klines -> 5y series + 5y % change. Assets without a
+   USDT pair (USDT itself, HYPE, …) resolve to null rather than a fake 0. */
+const loadFiveY=f=>cache('fivey',async()=>{
+  const ei=await jget(`${BN}/exchangeInfo?permissions=SPOT`);
+  const live=new Set(ei.symbols.filter(s=>s.status==='TRADING').map(s=>s.symbol));
+  const mk=(await loadMarkets()).main; const start=Date.now()-5*365*864e5;
+  const out={};
+  await Promise.all(mk.map(async a=>{
+    const pair=a.sym+'USDT';
+    if(!live.has(pair)){ out[a.sym]={pct:null,series:null,why:'no Binance USDT pair'}; return; }
+    try{
+      const k=await jget(`${BN}/klines?symbol=${pair}&interval=1w&startTime=${start}&limit=1000`);
+      if(!k.length){ out[a.sym]={pct:null,series:null,why:'no candles'}; return; }
+      const s=k.map(r=>({t:r[0],c:+r[4]}));
+      out[a.sym]={ pct:(s.at(-1).c/s[0].c-1)*100, series:s,
+                   weeks:s.length, short:s.length<200 };
+    }catch(e){ out[a.sym]={pct:null,series:null,why:e.message}; }
+  }));
+  return out;
+},f);
+
+const loadChains=f=>cache('chains',async()=>{
+  const c=await jget(`${LL}/v2/chains`);
+  return c.filter(x=>x.tvl>0).sort((a,b)=>b.tvl-a.tvl)
+          .slice(0,12).map(x=>({name:x.name,tvl:x.tvl}));
+},f);
+
+const loadTvlHist=f=>cache('tvlhist',async()=>{
+  const h=await jget(`${LL}/v2/historicalChainTvl`);
+  return h.slice(-730).map(d=>({t:d.date*1000,v:d.tvl}));
+},f);
+
+const loadStableAll=f=>cache('stableall',async()=>{
+  const s=await jget(`${SC}/stablecoincharts/all`);
+  return s.slice(-730).map(d=>({t:+d.date*1000,
+    v:Object.values(d.totalCirculatingUSD).reduce((a,b)=>a+b,0)}));
+},f);
+</script>
+<script>
+/* ============================================================
+   shared chart builders
+   ============================================================ */
+/* width to reserve for a value label drawn outside a bar end. The previous
+   per-char estimate under-measured and let zero-value labels ("+0.000%") sit
+   ~10px past the plot edge when every other value was negative. */
+const labelW=t=>String(t).length*(isNarrow()?7.0:7.6)+16;
+/* Axis ticks are centred on their value, so the tick at a domain edge overhangs
+   by roughly half its label. Margins must cover that as well as the bar-end
+   labels — when every bar is negative there are no right-hand bar labels, but
+   the x-axis still prints a tick at 0. */
+const tickPad=(fmt,...vals)=>Math.max(...vals.map(v=>labelW(fmt(v))))/2;
+
+const C={up:()=>css('--up'),down:()=>css('--down'),acc:()=>css('--acc'),
+         acc2:()=>css('--acc2'),warn:()=>css('--warn'),bd:()=>css('--bd')};
+
+/* signed bar chart across assets */
+function barSigned(el,rows,{fmt=v=>pct(v),label}={}){
+  const d=rows.filter(r=>r.v!=null&&isFinite(r.v));
+  if(!d.length) throw new Error('no data');
+  return Plot.plot(plotBase(el,{
+    height:Math.max(170,d.length*(isNarrow()?26:24)+50),
+    marginLeft:Math.max(isNarrow()?52:58,
+      Math.max(...d.map(r=>String(r.k).length))*(isNarrow()?6.2:6.9)+14
+      +Math.max(0,...d.filter(r=>r.v<0).map(r=>labelW(fmt(r.v))))),
+    marginRight:Math.max(12, tickPad(fmt,0,...d.map(r=>r.v)),
+      ...d.filter(r=>r.v>=0).map(r=>labelW(fmt(r.v)))),
+    x:{label:label||null,tickFormat:v=>fmt(v),grid:true,nice:true},
+    y:{label:null,domain:d.map(r=>r.k)},
+    color:{domain:['p','n'],range:[C.up(),C.down()]},
+    marks:[
+      Plot.barX(d,{y:'k',x:'v',fill:r=>r.v>=0?'p':'n',rx:3,
+        title:r=>`${r.k}  ${fmt(r.v)}`}),
+      Plot.ruleX([0],{stroke:C.bd()}),
+      /* dx and textAnchor are constant options in Plot, not channels — passing
+         functions stringifies them into the attribute and yields NaN offsets.
+         Two marks instead, so each side is anchored away from the bar. */
+      Plot.text(d.filter(r=>r.v>=0),{y:'k',x:'v',text:r=>fmt(r.v),
+        dx:6, textAnchor:'start', fontSize:isNarrow()?9:10, fill:css('--fg')}),
+      Plot.text(d.filter(r=>r.v<0),{y:'k',x:'v',text:r=>fmt(r.v),
+        dx:-6, textAnchor:'end', fontSize:isNarrow()?9:10, fill:css('--fg')})
+    ]
+  }));
+}
+/* plain magnitude bar (market cap, volume, tvl) */
+function barValue(el,rows,{fmt=usd,color}={}){
+  const d=rows.filter(r=>r.v!=null&&isFinite(r.v));
+  if(!d.length) throw new Error('no data');
+  return Plot.plot(plotBase(el,{
+    height:Math.max(170,d.length*(isNarrow()?26:24)+50),
+    marginLeft:Math.max(isNarrow()?60:76,
+      Math.max(...d.map(r=>String(r.k).length))*(isNarrow()?6.2:6.9)+14),
+    marginRight:Math.max(12, tickPad(fmt,0,...d.map(r=>r.v)),
+      ...d.map(r=>labelW(fmt(r.v)))),
+    x:{label:null,tickFormat:v=>fmt(v),grid:true,nice:true},
+    y:{label:null,domain:d.map(r=>r.k)},
+    marks:[
+      Plot.barX(d,{y:'k',x:'v',fill:color||C.acc(),rx:3,title:r=>`${r.k}  ${fmt(r.v)}`}),
+      Plot.ruleX([0],{stroke:C.bd()}),
+      Plot.text(d,{y:'k',x:'v',text:r=>fmt(r.v),dx:6,textAnchor:'start',
+        fontSize:isNarrow()?9:10,fill:css('--fg')})
+    ]
+  }));
+}
+/* time series; rows = [{t,v,s?}] */
+function lineTime(el,rows,{fmt=usd,colors,height,area=false,label}={}){
+  const d=rows.filter(r=>r.v!=null&&isFinite(r.v)).map(r=>({...r,d:new Date(r.t)}));
+  if(!d.length) throw new Error('no data');
+  const multi=d.some(r=>r.s);
+  const lo=Math.min(...d.map(r=>r.v)), hi=Math.max(...d.map(r=>r.v));
+  const marks=(lo<0&&hi>0)?[Plot.ruleY([0],{stroke:C.bd()})]:[];
+  if(area&&!multi) marks.push(Plot.areaY(d,{x:'d',y:'v',fill:C.acc(),fillOpacity:.13,curve:'monotone-x'}));
+  marks.push(Plot.lineY(d,Object.assign({x:'d',y:'v',curve:'monotone-x',strokeWidth:1.8},
+    multi?{stroke:'s'}:{stroke:C.acc()})));
+  marks.push(Plot.tip(d,Plot.pointerX({x:'d',y:'v',...(multi?{stroke:'s'}:{}),
+    format:{d:v=>v.toISOString().slice(0,10),v:v=>fmt(v),s:multi}})));
+  const gut=Math.max(isNarrow()?44:50,
+    Math.max(...[lo,hi].map(v=>String(fmt(v)).length))*(isNarrow()?6.0:6.7)+12);
+  const o=plotBase(el,{
+    marginLeft:gut,
+    height:height||(isNarrow()?200:230),
+    x:{label:null,grid:false},
+    y:{label:label||null,tickFormat:v=>fmt(v),grid:true,nice:true,
+       ...(area||lo<0?{}:{domain:[lo-(hi-lo)*0.08,hi+(hi-lo)*0.08]})},
+    marks
+  });
+  if(multi){ o.color={legend:true,...(colors?{range:colors}:{})}; }
+  return Plot.plot(o);
+}
+
+/* ============================================================
+   PAGE 1 — market
+   ============================================================ */
+async function page1(force){
+  const host=document.getElementById('page1');
+  host.innerHTML=`<div class="tiles" id="p1tiles"></div>
+    <div class="panel wide" id="p1table"></div>
+    <div class="panel wide" id="p1stable"></div>
+    <div class="grid" id="p1grid"></div>`;
+  const tiles=document.getElementById('p1tiles'),
+        grid=document.getElementById('p1grid');
+
+  /* tiles */
+  const tile=(k,v,s,c)=>{const e=document.createElement('div');e.className='tile';
+    e.innerHTML=`<div class="k">${k}</div><div class="v">${v}</div>`+
+      (s?`<div class="s ${c||''}">${s}</div>`:'');tiles.appendChild(e);return e;};
+  tiles.innerHTML='<div class="tile"><div class="k">loading</div><div class="v">…</div></div>';
+
+  retrying(()=>Promise.all([loadGlobal(force),loadChains(force),loadStableAll(force)]))
+   .then(([g,ch,st])=>{
+      tiles.innerHTML='';
+      tile('Total market cap',usd(g.mcap),pct(g.chg)+' 24h',cls(g.chg));
+      tile('BTC dominance',g.dom.btc.toFixed(2)+'%','ETH '+g.dom.eth.toFixed(2)+'%');
+      tile('DeFi TVL',usd(ch.reduce((a,b)=>a+b.tvl,0)),ch[0].name+' leads');
+      tile('Stablecoin cap',usd(st.at(-1).v),
+           pct((st.at(-1).v/st.at(-31).v-1)*100)+' 30d',cls(st.at(-1).v-st.at(-31).v));
+   })
+   .catch(e=>{tiles.innerHTML=`<div class="tile"><div class="k">error</div><div class="s down">${e.message}</div></div>`});
+
+  /* table */
+  const tp=panel(document.getElementById('p1table'),{});
+  document.getElementById('p1table').innerHTML=
+    `<div class="ph"><h3>Top 10 by market cap</h3><span class="src">CoinGecko + Binance</span></div>
+     <p class="sub">Tokenized-RWA and wrapped/staked derivatives filtered out.</p>
+     <div class="tw" id="p1tw"><div class="skel"></div></div>`;
+
+  const [mkt,fy]=await Promise.all([loadMarkets(force),loadFiveY(force).catch(()=>({}))]);
+  const mk=mkt.main, stb=mkt.stables;
+
+  document.getElementById('p1tw').innerHTML=`<table><thead><tr>
+    <th>Asset</th><th>Price</th><th>Market cap</th><th>Vol 24h</th>
+    <th>Day</th><th>Month</th><th>12 mo</th><th>5 yr</th><th>ATH</th><th>From ATH</th>
+    </tr></thead><tbody>${mk.map((a,i)=>{
+      const f=fy[a.sym]||{};
+      const f5=f.pct==null?`<span class="na" title="${f.why||'unavailable'}">—</span>`
+              :`<span class="${cls(f.pct)}">${pct(f.pct)}</span>`;
+      return `<tr>
+        <td><span class="rank">${i+1}</span><span class="sym">${a.sym}</span></td>
+        <td>${price(a.price)}</td><td>${usd(a.mcap)}</td><td>${usd(a.vol)}</td>
+        <td class="${cls(a.d1)}">${pct(a.d1)}</td>
+        <td class="${cls(a.d30)}">${pct(a.d30)}</td>
+        <td class="${cls(a.d365)}">${pct(a.d365)}</td>
+        <td>${f5}</td>
+        <td>${price(a.ath)}</td>
+        <td class="${cls(a.athPct)}">${pct(a.athPct)}</td></tr>`;
+    }).join('')}</tbody></table>`;
+
+  /* ---- stablecoins: tracked separately from the main table ---- */
+  document.getElementById('p1stable').innerHTML=
+    `<div class="ph"><h3>Stablecoins</h3><span class="src">CoinGecko</span></div>
+     <p class="sub">Peg = deviation from $1.00. Price change columns are omitted —
+        for a pegged asset they only restate the peg.</p>
+     <div class="tw"><table><thead><tr>
+       <th>Asset</th><th>Price</th><th>Peg</th><th>Market cap</th><th>Vol 24h</th>
+       <th>Share of stables</th></tr></thead><tbody>${(()=>{
+         const tot=stb.reduce((a,b)=>a+(b.mcap||0),0)||1;
+         return stb.map((a,i)=>`<tr>
+           <td><span class="rank">${i+1}</span><span class="sym">${a.sym}</span></td>
+           <td>${a.price==null?'—':'$'+a.price.toFixed(4)}</td>
+           <td class="${Math.abs(a.peg??0)<0.5?'na':cls(a.peg)}">${
+             a.peg==null?'—':(a.peg>=0?'+':'')+a.peg.toFixed(3)+'%'}</td>
+           <td>${usd(a.mcap)}</td><td>${usd(a.vol)}</td>
+           <td>${((a.mcap||0)/tot*100).toFixed(2)}%</td></tr>`).join('');
+       })()}</tbody></table></div>`;
+
+  const sg=document.createElement('div'); sg.className='grid';
+  sg.style.marginTop='12px';
+  document.getElementById('p1stable').appendChild(sg);
+  const SP=(t,sub)=>panel(sg,{title:t,sub,src:'CoinGecko'});
+  fill(SP('Stablecoin market cap','Supply in USD.'),
+       p=>barValue(p.body,stb.map(a=>({k:a.sym,v:a.mcap}))));
+  fill(SP('Peg deviation','Distance from $1.00, in percent.'),
+       p=>barSigned(p.body,stb.map(a=>({k:a.sym,v:a.peg})),
+                    {fmt:v=>(v>=0?'+':'')+v.toFixed(3)+'%'}));
+
+  /* one chart per indicator */
+  const P=(t,s,src,wide)=>panel(grid,{title:t,sub:s,src,wide});
+  const rows=k=>mk.map(a=>({k:a.sym,v:a[k]}));
+
+  fill(P('Market capitalisation','Absolute size, USD.','CoinGecko'),
+       p=>barValue(p.body,rows('mcap')));
+  fill(P('24h trading volume','Spot volume across tracked venues.','CoinGecko'),
+       p=>barValue(p.body,rows('vol'),{color:C.acc2()}));
+  fill(P('Change on the day','24h price change.','CoinGecko'),
+       p=>barSigned(p.body,rows('d1')));
+  fill(P('Change over the month','30d price change.','CoinGecko'),
+       p=>barSigned(p.body,rows('d30')));
+  fill(P('Change over twelve months','1y price change.','CoinGecko'),
+       p=>barSigned(p.body,rows('d365')));
+
+  const p5=P('Change over five years','Weekly closes, USDT-quoted. Price, not market cap.','Binance');
+  fill(p5,p=>{
+    const r=mk.map(a=>({k:a.sym,v:fy[a.sym]?.pct})).filter(x=>x.v!=null);
+    const miss=mk.filter(a=>fy[a.sym]?.pct==null).map(a=>a.sym);
+    if(miss.length) setTimeout(()=>p5.note('No 5-year series for '+miss.join(', ')
+      +' — no Binance USDT pair. Shown as “—” rather than zero.'),0);
+    return barSigned(p.body,r);
+  });
+
+  fill(P('Distance from all-time high','Negative = below ATH.','CoinGecko'),
+       p=>barSigned(p.body,rows('athPct')));
+
+  fill(P('Five-year price history','Indexed to 100 at the start of the window.','Binance',true),
+    p=>{ const out=[];
+      for(const a of mk){ const s=fy[a.sym]?.series; if(!s||s.length<200)continue;
+        const b=s[0].c; for(const x of s) out.push({t:x.t,v:x.c/b*100,s:a.sym}); }
+      if(!out.length) throw new Error('no series available');
+      return lineTime(p.body,out,{fmt:v=>nf(v,0),height:isNarrow()?240:300,label:'index'});
+    });
+
+  fill(P('Total DeFi TVL','Across all chains, 2 years.','DefiLlama'),
+    async p=>lineTime(p.body,await loadTvlHist(force),{area:true}));
+  fill(P('TVL by chain','Current, top 12.','DefiLlama'),
+    async p=>barValue(p.body,(await loadChains(force)).map(c=>({k:c.name,v:c.tvl})),{color:C.acc()}));
+  fill(P('Total stablecoin capitalisation','All pegs in USD terms, 2 years.','DefiLlama'),
+    async p=>lineTime(p.body,await loadStableAll(force),{area:true}));
+}
+</script>
+<script>
+/* ============================================================
+   PAGE 2 — on-chain
+   ============================================================ */
+const CM_ASSETS=['btc','eth','xrp','trx','usdt','usdc'];   /* sol = forbidden on free tier */
+const CHAINS=['ethereum','solana','bsc','base','arbitrum','polygon'];
+const CHAIN_LABEL={ethereum:'Ethereum',solana:'Solana',bsc:'BSC',base:'Base',
+                   arbitrum:'Arbitrum',polygon:'Polygon'};
+
+const ISSUER={1:{id:'tether',sym:'USDT'},2:{id:'usd-coin',sym:'USDC'}};
+/* Per-issuer supply history. DefiLlama's own per-issuer route
+   (/stablecoincharts/all?stablecoin=N) is unusable from a browser: it returns
+   TWO Access-Control-Allow-Origin headers, which every browser rejects. Its
+   single-header alternative (/stablecoin/N) is 21MB. CoinGecko's market cap
+   for a $1-pegged asset is the same quantity, 38KB, and matches DefiLlama's
+   figure to within 0.03%. */
+const loadIssuance=(id,f)=>cache('sc'+id,async()=>{
+  const r=await jget(`${CG}/coins/${ISSUER[id].id}/market_chart`
+    +`?vs_currency=usd&days=365&interval=daily`);
+  return (r.market_caps||[]).map(([t,v])=>({t,v}));
+},f);
+
+const loadCM=(metric,f)=>cache('cm'+metric,async()=>{
+  const start=new Date(Date.now()-730*864e5).toISOString().slice(0,10);
+  const r=await jget(`${CM}/timeseries/asset-metrics?assets=${CM_ASSETS.join(',')}`
+    +`&metrics=${metric}&frequency=1d&start_time=${start}&page_size=10000`);
+  return (r.data||[]).map(x=>({t:Date.parse(x.time),s:x.asset.toUpperCase(),
+    v:x[metric]==null?null:+x[metric]})).filter(x=>x.v!=null);
+},f);
+
+const loadDexTotal=f=>cache('dextotal',async()=>{
+  const d=await jget(`${LL}/overview/dexs?excludeTotalDataChartBreakdown=true`);
+  return {total24h:d.total24h,total7d:d.total7d,total30d:d.total30d,
+    chart:(d.totalDataChart||[]).slice(-730).map(([t,v])=>({t:t*1000,v}))};
+},f);
+
+const loadByChain=(kind,f)=>cache(kind+'bychain',async()=>{
+  const out=[];
+  for(const c of CHAINS){
+    try{ const r=await jget(`${LL}/overview/${kind}/${c}`
+        +`?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`);
+      out.push({k:CHAIN_LABEL[c],v:r.total24h??0,v30:r.total30d??0});
+    }catch{ out.push({k:CHAIN_LABEL[c],v:null,v30:null}); }
+  }
+  return out.sort((a,b)=>(b.v??-1)-(a.v??-1));
+},f);
+
+const loadChainTvlSeries=f=>cache('chaintvl',async()=>{
+  const out=[];
+  for(const c of ['Ethereum','Solana','BSC','Base','Tron']){
+    try{ const h=await jget(`${LL}/v2/historicalChainTvl/${c}`);
+      for(const d of h.slice(-540)) out.push({t:d.date*1000,v:d.tvl,s:c});
+    }catch{}
+  }
+  return out;
+},f);
+
+let p2done=false;
+async function page2(force){
+  const host=document.getElementById('page2');
+  host.innerHTML=`<div class="tiles" id="p2tiles"></div><div class="grid" id="p2grid"></div>`;
+  const tiles=document.getElementById('p2tiles'), grid=document.getElementById('p2grid');
+  const tile=(k,v,s,c)=>{const e=document.createElement('div');e.className='tile';
+    e.innerHTML=`<div class="k">${k}</div><div class="v">${v}</div>`+
+      (s?`<div class="s ${c||''}">${s}</div>`:'');tiles.appendChild(e);return e;};
+
+  /* ---- tiles: issuance snapshot ---- */
+  /* fixed slots, filled independently — no clearing, so nothing races away */
+  tiles.innerHTML='';
+  const slot=k=>{const e=document.createElement('div');e.className='tile';
+    e.innerHTML=`<div class="k">${k}</div><div class="v">…</div><div class="s"></div>`;
+    tiles.appendChild(e);
+    return (v,s,c)=>{e.querySelector('.v').textContent=v;
+      const se=e.querySelector('.s'); se.textContent=s||''; se.className='s '+(c||'');};};
+  const sU=slot('USDT supply'), sC=slot('USDC supply'), sD=slot('DEX volume 24h');
+
+  retrying(()=>Promise.all([loadIssuance(1,force),loadIssuance(2,force)])).then(([t,c])=>{
+    const d30=s=>s.at(-1).v-s.at(-31).v, p30=s=>(s.at(-1).v/s.at(-31).v-1)*100;
+    sU(usd(t.at(-1).v),usd(d30(t))+' 30d ('+pct(p30(t))+')',cls(d30(t)));
+    sC(usd(c.at(-1).v),usd(d30(c))+' 30d ('+pct(p30(c))+')',cls(d30(c)));
+  }).catch(e=>{sU('—',e.message,'down');sC('—','','');});
+
+  retrying(()=>loadDexTotal(force)).then(d=>sD(usd(d.total24h),usd(d.total30d)+' 30d'))
+                     .catch(e=>sD('—',e.message,'down'));
+
+  const P=(t,s,src,wide)=>panel(grid,{title:t,sub:s,src,wide});
+
+  /* ---- stablecoin issuance ---- */
+  fill(P('Stablecoin supply — USDT vs USDC','Circulating supply, USD, 1 year.','CoinGecko',true),
+    async p=>{
+      const [t,c]=await Promise.all([loadIssuance(1,force),loadIssuance(2,force)]);
+      const rows=[...t.map(x=>({...x,s:'USDT'})),...c.map(x=>({...x,s:'USDC'}))];
+      return lineTime(p.body,rows,{height:isNarrow()?230:300});
+    });
+
+  fill(P('Net issuance','Change in circulating supply over each window.','CoinGecko'),
+    async p=>{
+      const [t,c]=await Promise.all([loadIssuance(1,force),loadIssuance(2,force)]);
+      const at=(s,n)=>s.at(-1).v-s.at(-1-n).v;
+      const rows=[
+        {k:'USDT 30d',v:at(t,30)},  {k:'USDC 30d',v:at(c,30)},
+        {k:'USDT 90d',v:at(t,90)},  {k:'USDC 90d',v:at(c,90)},
+        {k:'USDT 1y', v:at(t,364)}, {k:'USDC 1y', v:at(c,364)},
+      ];
+      return barSigned(p.body,rows,{fmt:usd});
+    });
+
+  /* ---- coin metrics ---- */
+  const pa=P('Active addresses','Daily unique active addresses, 2 years.','Coin Metrics',true);
+  fill(pa,async p=>{
+    const d=await loadCM('AdrActCnt',force);
+    setTimeout(()=>pa.note('SOL is unavailable — Coin Metrics’ free tier returns '
+      +'<code>forbidden</code> for it. BNB is excluded too: its series stops in 2019.'),0);
+    return lineTime(p.body,d,{fmt:cnt,height:isNarrow()?230:300});
+  });
+
+  const pt=P('Transaction counts','Daily transactions, 2 years.','Coin Metrics',true);
+  fill(pt,async p=>{
+    const d=await loadCM('TxCnt',force);
+    setTimeout(()=>pt.note('Counts, not USD value. Coin Metrics’ free tier returns '
+      +'<code>forbidden</code> for every transfer-<em>value</em> metric, so on-chain '
+      +'settlement value in USD is not charted here.'),0);
+    return lineTime(p.body,d,{fmt:cnt,height:isNarrow()?230:300});
+  });
+
+  /* ---- tvl by chain over time ---- */
+  fill(P('TVL by chain','Top chains, 18 months.','DefiLlama',true),
+    async p=>lineTime(p.body,await loadChainTvlSeries(force),{height:isNarrow()?230:290}));
+
+  /* ---- heavier panels, filled on first view ---- */
+  window.__p2heavy=[
+    [P('DEX volume','Aggregate across all DEXs, 2 years.','DefiLlama'),
+      async p=>lineTime(p.body,(await loadDexTotal(force)).chart,{area:true})],
+    [P('DEX volume by chain','24h, top chains.','DefiLlama'),
+      async p=>barValue(p.body,await loadByChain('dexs',force),{color:C.acc2()})],
+    [P('Chain fees / revenue','24h fees paid, top chains.','DefiLlama'),
+      async p=>barValue(p.body,await loadByChain('fees',force),{color:C.warn()})],
+  ];
+  p2done=false; page2Lazy();
+  duneMount(grid);
+}
+function page2Lazy(){
+  if(p2done||!window.__p2heavy)return;
+  if(document.getElementById('page2').hidden)return;
+  p2done=true;
+  for(const [p,fn] of window.__p2heavy) fill(p,fn).then(()=>redrawVisible());
+}
+</script>
+<script>
+/* ============================================================
+   DUNE — optional, key supplied at runtime.
+   The key is NEVER written into this file: it lives only in this
+   browser's localStorage, so hosting the file exposes nothing.
+   ============================================================ */
+const DUNE='https://api.dune.com/api/v1';
+const dkey=()=>{try{return localStorage.getItem('cd:dune')||''}catch{return''}};
+
+function duneMount(grid){
+  const el=document.createElement('div');
+  el.className='panel wide';
+  el.innerHTML=`
+    <div class="ph"><h3>Dune query</h3>
+      <span class="src">api.dune.com</span></div>
+    <p class="sub">Runs any Dune query you own and charts the result.
+       Fills gaps the free APIs can't — on-chain settlement value in USD, for one.
+       <span class="pill" id="dstat">no key</span></p>
+    <div class="frm">
+      <div class="fld"><label for="dk">API key</label>
+        <input id="dk" type="password" placeholder="stored in this browser only" autocomplete="off"></div>
+      <div class="fld" style="flex:0 0 150px"><label for="dq">Query ID</label>
+        <input id="dq" type="text" inputmode="numeric" placeholder="e.g. 3237150"></div>
+      <button class="btn" id="drun">Run</button>
+    </div>
+    <div class="chart" id="dout"><div class="state">Enter a key and query ID to load results.</div></div>`;
+  grid.appendChild(el);
+
+  const k=el.querySelector('#dk'), q=el.querySelector('#dq'),
+        out=el.querySelector('#dout'), stat=el.querySelector('#dstat');
+  k.value=dkey();
+  try{ q.value=localStorage.getItem('cd:duneq')||''; }catch{}
+  if(k.value){ stat.textContent='key saved'; stat.className='pill ok'; }
+  k.addEventListener('change',()=>{
+    try{ k.value?localStorage.setItem('cd:dune',k.value):localStorage.removeItem('cd:dune'); }catch{}
+    stat.textContent=k.value?'key saved':'no key';
+    stat.className='pill'+(k.value?' ok':'');
+  });
+
+  el.querySelector('#drun').addEventListener('click',async()=>{
+    const key=k.value.trim(), qid=q.value.trim().replace(/\D/g,'');
+    if(!key){ out.innerHTML='<div class="state err">No API key.</div>'; return; }
+    if(!qid){ out.innerHTML='<div class="state err">No query ID.</div>'; return; }
+    try{ localStorage.setItem('cd:dune',key); localStorage.setItem('cd:duneq',qid); }catch{}
+    out.innerHTML='<div class="skel"></div>';
+    try{
+      const r=await jget(`${DUNE}/query/${qid}/results?limit=1000`,{headers:{'X-Dune-Api-Key':key}});
+      const rows=r?.result?.rows||[];
+      if(!rows.length){ out.innerHTML='<div class="state">Query returned no rows.</div>'; return; }
+      out.innerHTML='';
+      const cols=Object.keys(rows[0]);
+      /* auto-chart: first date-like column + first numeric column */
+      const tcol=cols.find(c=>/date|time|day|week|month|block_t/i.test(c)&&!isNaN(Date.parse(rows[0][c])));
+      const ncol=cols.find(c=>c!==tcol&&typeof rows[0][c]==='number');
+      if(tcol&&ncol){
+        const d=rows.map(x=>({t:Date.parse(x[tcol]),v:+x[ncol]}))
+                    .filter(x=>isFinite(x.t)&&isFinite(x.v)).sort((a,b)=>a.t-b.t);
+        if(d.length){ const c=document.createElement('div');
+          out.appendChild(c);
+          c.appendChild(lineTime(c,d,{fmt:v=>Math.abs(v)>=1e6?usd(v):nf(v,0),area:true,label:ncol}));
+        }
+      }
+      const tw=document.createElement('div'); tw.className='tw';
+      const show=rows.slice(0,50);
+      tw.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
+        <tbody>${show.map(x=>`<tr>${cols.map(c=>{
+          const v=x[c];
+          return `<td>${typeof v==='number'?nf(v,Math.abs(v)>=1000?0:2):(v==null?'—':String(v).slice(0,40))}</td>`;
+        }).join('')}</tr>`).join('')}</tbody></table>`;
+      out.appendChild(tw);
+      const meta=document.createElement('p'); meta.className='sub';
+      meta.style.marginTop='9px';
+      meta.textContent=`${rows.length} rows returned${rows.length>50?' (showing 50)':''}`
+        +(r.execution_ended_at?` · last run ${r.execution_ended_at.slice(0,16).replace('T',' ')}`:'');
+      out.appendChild(meta);
+    }catch(e){
+      out.innerHTML=`<div class="state err">Dune request failed — ${e.message}<br>
+        <span style="color:var(--dim)">401 = bad key · 404 = query not found or not yours · 402 = out of credits</span></div>`;
+    }
+  });
+}
+
+/* ============================================================
+   PAGE 3 — rates: perp funding + stablecoin money markets
+   ============================================================ */
+const FAPI='https://fapi.binance.com/fapi/v1';
+const pctf=v=>v==null||!isFinite(v)?'—':(v>=0?'+':'')+v.toFixed(2)+'%';
+const apyf=v=>v==null||!isFinite(v)?'—':v.toFixed(2)+'%';
+/* per-period funding is ~0.01%, so 2dp would render every row as "0.00%" */
+const rawf=v=>v==null||!isFinite(v)?'—':(v>=0?'+':'')+v.toFixed(4)+'%';
+
+/* Funding is quoted per interval, and Binance runs 1h / 4h / 8h schedules
+   depending on the symbol — so annualising with a flat 3x/day would be wrong
+   for many pairs. fundingInfo gives the real interval; 8h is the default. */
+const loadFunding=f=>cache('funding',async()=>{
+  const [tick,prem,info,cg]=await Promise.all([
+    jget(`${FAPI}/ticker/24hr`),
+    jget(`${FAPI}/premiumIndex`),
+    jget(`${FAPI}/fundingInfo`).catch(()=>[]),
+    jget(`${CG}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=150&page=1`)
+  ]);
+  /* "most liquid COINS": rank perps by 24h quote volume, but keep only bases
+     that are real crypto. Binance futures now lists tokenised equities and
+     commodities (XAU, SOXL, SNDK, SPCX…) that outrank most alts on volume. */
+  const uni=new Set(cg.map(c=>c.symbol.toUpperCase()));
+  const iv=new Map(info.map(x=>[x.symbol,+x.fundingIntervalHours||8]));
+  const pm=new Map(prem.map(x=>[x.symbol,x]));
+  const rows=tick.filter(x=>x.symbol.endsWith('USDT')&&uni.has(x.symbol.slice(0,-4)))
+    .sort((a,b)=>+b.quoteVolume-+a.quoteVolume).slice(0,10)
+    .map(x=>{
+      const p=pm.get(x.symbol), h=iv.get(x.symbol)||8;
+      const r=p?+p.lastFundingRate:null;
+      return {k:x.symbol.slice(0,-4), sym:x.symbol, vol:+x.quoteVolume,
+              rate:r==null?null:r*100, hours:h,
+              ann:r==null?null:r*(24/h)*365*100,
+              next:p?+p.nextFundingTime:null, mark:p?+p.markPrice:null};
+    });
+  return rows;
+},f);
+
+const loadFundingHist=(sym,hours,f)=>cache('fh'+sym,async()=>{
+  const d=await jget(`${FAPI}/fundingRate?symbol=${sym}&limit=500`);
+  return d.map(x=>({t:x.fundingTime,v:+x.fundingRate*(24/hours)*365*100,s:sym.slice(0,-4)}));
+},f);
+
+/* DefiLlama's yields index (/pools) is 11.6MB — far too heavy for a phone, and
+   /lendBorrow carries no symbol or project, only a pool UUID. So the markets are
+   pinned by UUID and each one's small /chart is fetched instead. If a pool is
+   retired its row degrades to "unavailable" rather than breaking the panel.
+   Refresh these from https://yields.llama.fi/pools if a market disappears. */
+const MM_POOLS=[
+  {id:'aa70268e-4b52-42bf-a116-608b370f9501',project:'Aave v3',   sym:'USDC'},
+  {id:'f981a304-bb6c-45b8-b0c5-fd2f515ad23a',project:'Aave v3',   sym:'USDT'},
+  {id:'c5c74dd1-995c-4445-9d84-3e710bad7d52',project:'Spark',     sym:'USDC'},
+  {id:'a5d67f7e-5b51-4a9d-969d-caf051a7f5a4',project:'Spark',     sym:'USDT'},
+  {id:'7da72d09-56ca-4ec5-a45f-59114353e487',project:'Compound v3',sym:'USDC'},
+  {id:'4e8cc592-c8d5-4824-8155-128ba521e903',project:'Fluid',     sym:'USDT'},
+];
+const loadMM=f=>cache('mm',async()=>{
+  const out=[];
+  for(const m of MM_POOLS){
+    try{
+      const r=await jget(`https://yields.llama.fi/chart/${m.id}`);
+      const d=(r.data||[]).filter(x=>x.apy!=null);
+      if(!d.length){ out.push({...m,apy:null,tvl:null,series:[]}); continue; }
+      out.push({...m, apy:d.at(-1).apy, tvl:d.at(-1).tvlUsd,
+        series:d.slice(-540).map(x=>({t:Date.parse(x.timestamp),v:x.apy,
+          s:m.project+' '+m.sym}))});
+    }catch{ out.push({...m,apy:null,tvl:null,series:[]}); }
+  }
+  return out;
+},f);
+
+async function page3(force){
+  const host=document.getElementById('page3');
+  host.innerHTML=`<div class="tiles" id="p3tiles"></div>
+    <div class="panel wide" id="p3table"></div><div class="grid" id="p3grid"></div>`;
+  const tiles=document.getElementById('p3tiles'), grid=document.getElementById('p3grid');
+  const slot=k=>{const e=document.createElement('div');e.className='tile';
+    e.innerHTML=`<div class="k">${k}</div><div class="v">…</div><div class="s"></div>`;
+    tiles.appendChild(e);
+    return (v,sub,c)=>{e.querySelector('.v').textContent=v;
+      const se=e.querySelector('.s'); se.textContent=sub||''; se.className='s '+(c||'');};};
+  const sB=slot('BTC funding (ann.)'), sE=slot('ETH funding (ann.)'),
+        sU=slot('USDC supply APY'),    sT=slot('USDT supply APY');
+
+  /* ---- funding ---- */
+  document.getElementById('p3table').innerHTML=
+    `<div class="ph"><h3>Perpetual funding — most liquid coins</h3>
+       <span class="src">Binance futures</span></div>
+     <p class="sub">Ranked by 24h futures volume. Positive = longs pay shorts.
+        Annualised at each symbol's own funding interval.</p>
+     <div class="tw" id="p3tw"><div class="skel"></div></div>`;
+
+  let fund=[];
+  try{
+    fund=await retrying(()=>loadFunding(force));
+    const b=fund.find(x=>x.k==='BTC'), e=fund.find(x=>x.k==='ETH');
+    if(b) sB(pctf(b.ann), rawf(b.rate)+' / '+b.hours+'h', cls(b.ann));
+    if(e) sE(pctf(e.ann), rawf(e.rate)+' / '+e.hours+'h', cls(e.ann));
+    document.getElementById('p3tw').innerHTML=`<table><thead><tr>
+      <th>Coin</th><th>Futures vol 24h</th><th>Mark</th><th>Interval</th>
+      <th>Rate / period</th><th>Annualised</th><th>Next funding</th>
+      </tr></thead><tbody>${fund.map(r=>`<tr>
+        <td><span class="sym">${r.k}</span></td>
+        <td>${usd(r.vol)}</td><td>${price(r.mark)}</td><td>${r.hours}h</td>
+        <td class="${cls(r.rate)}">${rawf(r.rate)}</td>
+        <td class="${cls(r.ann)}">${pctf(r.ann)}</td>
+        <td>${r.next?new Date(r.next).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'—'}</td>
+      </tr>`).join('')}</tbody></table>`;
+  }catch(err){
+    document.getElementById('p3tw').innerHTML=
+      `<div class="state err">Could not load funding — ${err.message}</div>`;
+    sB('—','','');sE('—','','');
+  }
+
+  const P=(t,sub,src,wide)=>panel(grid,{title:t,sub,src,wide});
+
+  fill(P('Funding rate, annualised','Current rate scaled to a year.','Binance futures'),
+    p=>barSigned(p.body,fund.map(r=>({k:r.k,v:r.ann})),{fmt:pctf}));
+
+  const ph=P('Funding rate history','Annualised, last ~500 funding periods.','Binance futures',true);
+  fill(ph,async p=>{
+    const picks=fund.slice(0,3);
+    if(!picks.length) throw new Error('no symbols');
+    const all=(await Promise.all(picks.map(r=>
+      loadFundingHist(r.sym,r.hours,force).catch(()=>[])))).flat();
+    if(!all.length) throw new Error('no history');
+    setTimeout(()=>ph.note('Each series is annualised at its own funding interval, '
+      +'so symbols on 1h or 4h schedules stay comparable with the 8h default.'),0);
+    return lineTime(p.body,all,{fmt:pctf,height:isNarrow()?230:290});
+  });
+
+  /* ---- money markets (heavier: one chart call per pool) ---- */
+  window.__p3heavy=[
+    [P('Stablecoin supply APY','What lenders earn on USDT / USDC today.','DefiLlama yields'),
+      async p=>{
+        const m=await loadMM(force);
+        const u=m.filter(x=>x.sym==='USDC'&&x.apy!=null).sort((a,b)=>b.apy-a.apy)[0];
+        const t=m.filter(x=>x.sym==='USDT'&&x.apy!=null).sort((a,b)=>b.apy-a.apy)[0];
+        if(u) sU(apyf(u.apy), u.project+' · best of '+m.filter(x=>x.sym==='USDC').length);
+        if(t) sT(apyf(t.apy), t.project+' · best of '+m.filter(x=>x.sym==='USDT').length);
+        const miss=m.filter(x=>x.apy==null);
+        if(miss.length) setTimeout(()=>p.note('No data for '
+          +miss.map(x=>x.project+' '+x.sym).join(', ')
+          +' — the pinned pool id may have been retired.'),0);
+        return barValue(p.body,m.filter(x=>x.apy!=null)
+          .sort((a,b)=>b.apy-a.apy).map(x=>({k:x.project+' '+x.sym,v:x.apy})),
+          {fmt:apyf,color:C.acc()});
+      }],
+    [P('Money market TVL','Size of each lending market.','DefiLlama yields'),
+      async p=>barValue(p.body,(await loadMM(force)).filter(x=>x.tvl!=null)
+        .sort((a,b)=>b.tvl-a.tvl).map(x=>({k:x.project+' '+x.sym,v:x.tvl})),{color:C.acc2()})],
+    [P('Supply APY history','18 months of lending rates.','DefiLlama yields',true),
+      async p=>{
+        const m=await loadMM(force); const all=m.flatMap(x=>x.series);
+        if(!all.length) throw new Error('no series');
+        return lineTime(p.body,all,{fmt:apyf,height:isNarrow()?240:300});
+      }],
+  ];
+  p3done=false; page3Lazy();
+}
+let p3done=false;
+function page3Lazy(){
+  if(p3done||!window.__p3heavy)return;
+  if(document.getElementById('page3').hidden)return;
+  p3done=true;
+  for(const [p,fn] of window.__p3heavy) fill(p,fn).then(()=>redrawVisible());
+}
+
+/* ============================================================
+   boot
+   ============================================================ */
+/* Auto-refresh cadence. Set to 0 to disable and refresh only by hand.
+   Kept at 5 min deliberately: CoinGecko's keyless tier allows roughly
+   5-15 requests/minute and a full refresh spends three of them. */
+const AUTO_MS=5*60*1000;
+let lastBoot=0, booting=false;
+
+async function boot(force){
+  if(booting) return;                     // never let two refreshes overlap
+  booting=true;
+  const b=document.getElementById('refresh'); b.disabled=true; b.textContent='…';
+  if(force){ mem.clear();
+    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK))
+      .forEach(k=>localStorage.removeItem(k)); }catch{} }
+  try{ await Promise.all([page1(force),page2(force),page3(force)]); }
+  finally{
+    booting=false; lastBoot=Date.now();
+    b.disabled=false; b.textContent='Refresh';
+    document.getElementById('stamp').textContent=
+      'updated '+new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})
+      +(AUTO_MS?' · auto '+(AUTO_MS/60000)+'m':'');
+  }
+}
+
+/* Refresh on a timer, but only while the page is actually on screen — a phone
+   with the screen off or a backgrounded tab must not keep burning rate limit.
+   Coming back to a stale tab triggers an immediate refresh instead. */
+const due=()=>AUTO_MS&&!booting&&Date.now()-lastBoot>=AUTO_MS;
+setInterval(()=>{ if(document.visibilityState==='visible'&&due()) boot(true); },30000);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&due()) boot(true);
+});
+let rz; addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(redrawVisible,300)});
+try{ const sp=+localStorage.getItem('cd:page'); if(PAGES.includes(sp)&&sp!==1) showPage(sp); }catch{}
+boot(false);
+</script>
+</body>
+</html>
