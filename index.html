@@ -135,7 +135,7 @@ const TTL=10*60*1000;               // 10 min cache
 /* Bump CACHE_VER whenever a loader's OUTPUT SHAPE or ordering changes —
    otherwise a stale localStorage entry keeps serving the old shape after an
    edit, which looks exactly like the code change not working. */
-const CACHE_VER=3, CK='cdc'+CACHE_VER+':';
+const CACHE_VER=5, CK='cdc'+CACHE_VER+':';
 const mem=new Map();
 /* drop caches written by any earlier version, plus the legacy un-versioned
    cd: cache keys. cd:dune / cd:duneq / cd:page are settings, not cache. */
@@ -194,11 +194,12 @@ async function jget(url,opts={}){
   throw last;
 }
 /* cache DERIVED series only (never the multi-MB raw payloads) */
-function cache(key,fn,force){
+function cache(key,fn,force,ttl){
+  const life=ttl||TTL;
   if(!force&&mem.has(key)) return mem.get(key);
   if(!force){
     try{ const r=JSON.parse(localStorage.getItem(CK+key)||'null');
-      if(r&&Date.now()-r.t<TTL){ const p=Promise.resolve(r.v); mem.set(key,p); return p; } }catch{}
+      if(r&&Date.now()-r.t<life){ const p=Promise.resolve(r.v); mem.set(key,p); return p; } }catch{}
   }
   const p=fn().then(v=>{
     try{ localStorage.setItem(CK+key,JSON.stringify({t:Date.now(),v})); }catch{}
@@ -305,9 +306,10 @@ function showPage(n){
    DYDX is 'dydx-chain' (rank ~261); the legacy 'dydx' is the old ethDYDX. */
 const MAIN_IDS=['cardano','avalanche-2','filecoin','aave','uniswap','sui',
                 'polkadot','arbitrum','near','dydx-chain','optimism','chainlink'];
-/* The stablecoin section. BUSD is 'binance-usd' — wound down by Paxos, so it
-   sits near rank 640 with almost no volume, far outside any top-250 fetch. */
-const STABLE_IDS=['tether','usd-coin','ethena-usde','binance-usd','dai','usd1-wlfi'];
+/* The stablecoin section. PYUSD is 'paypal-usd' (rank ~40). It replaced BUSD
+   ('binance-usd'), which Paxos wound down — BUSD sits near rank 640 with
+   effectively no volume. */
+const STABLE_IDS=['tether','usd-coin','ethena-usde','paypal-usd','dai','usd1-wlfi'];
 const STABLE_ID=new Set(STABLE_IDS);
 const STABLE=new Set(['USDT','USDC','USDE','DAI','FDUSD','USDS','PYUSD',
                       'TUSD','USD1','BUSD','RLUSD','USDF']);
@@ -851,17 +853,29 @@ const rawf=v=>v==null||!isFinite(v)?'—':(v>=0?'+':'')+v.toFixed(4)+'%';
 /* Funding is quoted per interval, and Binance runs 1h / 4h / 8h schedules
    depending on the symbol — so annualising with a flat 3x/day would be wrong
    for many pairs. fundingInfo gives the real interval; 8h is the default. */
+/* The "is this a real coin" universe moves slowly, so it is cached for a day
+   rather than re-fetched on every 5-minute refresh. That keeps a steady-state
+   refresh down to five CoinGecko calls and stops this panel being the one that
+   gets squeezed out by the rate limit. */
+const UNIVERSE_TTL=24*60*60*1000;
+const loadUniverse=f=>cache('universe',async()=>{
+  const cg=await jget(`${CG}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=150&page=1`);
+  return cg.map(c=>c.symbol.toUpperCase());
+},f,UNIVERSE_TTL);
+
 const loadFunding=f=>cache('funding',async()=>{
   const [tick,prem,info,cg]=await Promise.all([
     jget(`${FAPI}/ticker/24hr`),
     jget(`${FAPI}/premiumIndex`),
     jget(`${FAPI}/fundingInfo`).catch(()=>[]),
-    jget(`${CG}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=150&page=1`)
+    /* deliberately not forced: auto-refresh calls boot(true), which would
+       otherwise re-fetch this every 5 minutes and undo the long TTL */
+    loadUniverse(false)
   ]);
   /* "most liquid COINS": rank perps by 24h quote volume, but keep only bases
      that are real crypto. Binance futures now lists tokenised equities and
      commodities (XAU, SOXL, SNDK, SPCX…) that outrank most alts on volume. */
-  const uni=new Set(cg.map(c=>c.symbol.toUpperCase()));
+  const uni=new Set(cg);
   const iv=new Map(info.map(x=>[x.symbol,+x.fundingIntervalHours||8]));
   const pm=new Map(prem.map(x=>[x.symbol,x]));
   const rows=tick.filter(x=>x.symbol.endsWith('USDT')&&uni.has(x.symbol.slice(0,-4)))
@@ -1021,7 +1035,7 @@ async function boot(force){
   booting=true;
   const b=document.getElementById('refresh'); b.disabled=true; b.textContent='…';
   if(force){ mem.clear();
-    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK))
+    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe')
       .forEach(k=>localStorage.removeItem(k)); }catch{} }
   try{ await Promise.all([page1(force),page2(force),page3(force)]); }
   finally{
