@@ -444,6 +444,37 @@ function barSigned(el,rows,{fmt=v=>pct(v),label}={}){
     ]
   }));
 }
+/* Signed COLUMNS: categories run left-to-right along the bottom instead of
+   stacking down the side. Same data as barSigned, rotated. */
+function colSigned(el,rows,{fmt=v=>pct(v)}={}){
+  const d=rows.filter(r=>r.v!=null&&isFinite(r.v));
+  if(!d.length) throw new Error('no data');
+  const lo=Math.min(0,...d.map(r=>r.v)), hi=Math.max(0,...d.map(r=>r.v));
+  const longest=Math.max(...d.map(r=>String(r.k).length));
+  const rot=isNarrow()||longest>6;
+  return Plot.plot(plotBase(el,{
+    height:isNarrow()?250:270,
+    marginTop:20,
+    marginBottom:rot?(isNarrow()?62:70):34,
+    marginLeft:Math.max(isNarrow()?46:54,tickPad(fmt,lo,hi)+18),
+    marginRight:12,
+    x:{label:null,domain:d.map(r=>r.k),tickRotate:rot?-40:0},
+    y:{label:null,tickFormat:v=>fmt(v),grid:true,nice:true},
+    color:{domain:['p','n'],range:[C.up(),C.down()]},
+    marks:[
+      Plot.barY(d,{x:'k',y:'v',fill:r=>r.v>=0?'p':'n',rx:3,
+        title:r=>`${r.k}  ${fmt(r.v)}`}),
+      Plot.ruleY([0],{stroke:C.bd()}),
+      /* value labels sit outside the bar end: above for positive, below for
+         negative, so they never overlap the column */
+      Plot.text(d.filter(r=>r.v>=0),{x:'k',y:'v',text:r=>fmt(r.v),dy:-7,
+        textAnchor:'middle',fontSize:isNarrow()?9:10,fill:css('--fg')}),
+      Plot.text(d.filter(r=>r.v<0),{x:'k',y:'v',text:r=>fmt(r.v),dy:13,
+        textAnchor:'middle',fontSize:isNarrow()?9:10,fill:css('--fg')})
+    ]
+  }));
+}
+
 /* plain magnitude bar (market cap, volume, tvl) */
 function barValue(el,rows,{fmt=usd,color}={}){
   const d=rows.filter(r=>r.v!=null&&isFinite(r.v));
@@ -764,7 +795,7 @@ async function page2(force){
         total:all?all.filter(x=>x.t>=from):null});
     });
 
-  fill(P('Net issuance','Change in circulating supply over each window.','CoinGecko'),
+  fill(P('Net issuance','Change in circulating supply over each window.','CoinGecko',true),
     async p=>{
       const [t,c]=await Promise.all([loadIssuance(1,force),loadIssuance(2,force)]);
       const at=(s,n)=>s.at(-1).v-s.at(-1-n).v;
@@ -773,7 +804,7 @@ async function page2(force){
         {k:'USDT 90d',v:at(t,90)},  {k:'USDC 90d',v:at(c,90)},
         {k:'USDT 1y', v:at(t,364)}, {k:'USDC 1y', v:at(c,364)},
       ];
-      return barSigned(p.body,rows,{fmt:usd});
+      return colSigned(p.body,rows,{fmt:usd});
     });
 
   /* ---- coin metrics ---- */
