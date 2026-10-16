@@ -464,6 +464,43 @@ function barValue(el,rows,{fmt=usd,color}={}){
     ]
   }));
 }
+/* Stacked time series. Plot stacks areaY by default when a fill channel is
+   present, so the TOP EDGE of the stack is the combined total — which is the
+   point: it shows whether supply overall is growing, not just how the two
+   issuers move relative to each other. An optional `total` series is drawn as
+   a dashed line above the stack; the gap between them is every other
+   stablecoin. */
+function stackTime(el,rows,{fmt=usd,height,total}={}){
+  const d=rows.filter(r=>r.v!=null&&isFinite(r.v)).map(r=>({...r,d:new Date(r.t)}));
+  if(!d.length) throw new Error('no data');
+  const td=(total||[]).filter(r=>r.v!=null&&isFinite(r.v)).map(r=>({...r,d:new Date(r.t)}));
+
+  const sums=new Map();
+  for(const r of d) sums.set(r.t,(sums.get(r.t)||0)+r.v);
+  const hi=Math.max(...sums.values(),...td.map(r=>r.v));
+
+  const marks=[
+    Plot.areaY(d,{x:'d',y:'v',fill:'s',fillOpacity:.9,curve:'monotone-x'}),
+    Plot.ruleY([0],{stroke:C.bd()})
+  ];
+  if(td.length) marks.push(
+    Plot.lineY(td,{x:'d',y:'v',stroke:css('--fg'),strokeWidth:1.4,
+      strokeDasharray:'4,3',curve:'monotone-x'}),
+    Plot.tip(td,Plot.pointerX({x:'d',y:'v',
+      format:{d:v=>v.toISOString().slice(0,10),v:v=>'all stables '+fmt(v)}})));
+
+  const gut=Math.max(isNarrow()?44:50,
+    String(fmt(hi)).length*(isNarrow()?6.0:6.7)+12);
+  return Plot.plot(plotBase(el,{
+    marginLeft:gut,
+    height:height||(isNarrow()?230:300),
+    x:{label:null,grid:false},
+    y:{label:null,tickFormat:v=>fmt(v),grid:true,domain:[0,hi*1.06]},
+    color:{legend:true},
+    marks
+  }));
+}
+
 /* time series; rows = [{t,v,s?}] */
 function lineTime(el,rows,{fmt=usd,colors,height,area=false,label}={}){
   const d=rows.filter(r=>r.v!=null&&isFinite(r.v)).map(r=>({...r,d:new Date(r.t)}));
@@ -711,11 +748,20 @@ async function page2(force){
   const P=(t,s,src,wide)=>panel(grid,{title:t,sub:s,src,wide});
 
   /* ---- stablecoin issuance ---- */
-  fill(P('Stablecoin supply — USDT vs USDC','Circulating supply, USD, 1 year.','CoinGecko',true),
+  fill(P('Stablecoin supply — USDT + USDC',
+         'Stacked, so the top of the shaded area is their combined supply. '
+         +'The dashed line is every stablecoin (DefiLlama) — the gap between '
+         +'them is everything other than USDT and USDC.',
+         'CoinGecko + DefiLlama',true),
     async p=>{
-      const [t,c]=await Promise.all([loadIssuance(1,force),loadIssuance(2,force)]);
+      const [t,c,all]=await Promise.all([
+        loadIssuance(1,force), loadIssuance(2,force),
+        loadStableAll(force).catch(()=>null)   /* overlay is optional */
+      ]);
       const rows=[...t.map(x=>({...x,s:'USDT'})),...c.map(x=>({...x,s:'USDC'}))];
-      return lineTime(p.body,rows,{height:isNarrow()?230:300});
+      const from=Math.min(...rows.map(r=>r.t));
+      return stackTime(p.body,rows,{height:isNarrow()?240:300,
+        total:all?all.filter(x=>x.t>=from):null});
     });
 
   fill(P('Net issuance','Change in circulating supply over each window.','CoinGecko'),
