@@ -356,9 +356,16 @@ const loadGlobal=f=>cache('global',async()=>{
 
 /* Binance weekly klines -> 5y series + 5y % change. Assets without a
    USDT pair (USDT itself, HYPE, …) resolve to null rather than a fake 0. */
+/* Which Binance spot pairs exist. exchangeInfo answers this too, but it is
+   17.7MB and was being refetched on every refresh; ticker/price is 158KB and
+   lists exactly the symbols that are trading. Cached for a day. */
+const loadPairs=f=>cache('pairs',async()=>{
+  const t=await jget(`${BN}/ticker/price`);
+  return t.map(x=>x.symbol);
+},f,UNIVERSE_TTL);
+
 const loadFiveY=f=>cache('fivey',async()=>{
-  const ei=await jget(`${BN}/exchangeInfo?permissions=SPOT`);
-  const live=new Set(ei.symbols.filter(s=>s.status==='TRADING').map(s=>s.symbol));
+  const live=new Set(await loadPairs(false));
   const mk=(await loadMarkets()).main; const start=Date.now()-5*365*864e5;
   const out={};
   await Promise.all(mk.map(async a=>{
@@ -521,6 +528,7 @@ async function page1(force){
 
   const [mkt,fy]=await Promise.all([loadMarkets(force),loadFiveY(force).catch(()=>({}))]);
   const mk=mkt.main, stb=mkt.stables;
+  MAIN=mk;                      /* same array object the quote tier mutates */
 
   document.getElementById('p1tw').innerHTML=`<table><thead><tr>
     <th>Asset</th><th>Price</th><th>Market cap</th><th>Vol 24h</th>
@@ -529,10 +537,12 @@ async function page1(force){
       const f=fy[a.sym]||{};
       const f5=f.pct==null?`<span class="na" title="${f.why||'unavailable'}">—</span>`
               :`<span class="${cls(f.pct)}">${pct(f.pct)}</span>`;
-      return `<tr>
+      return `<tr data-sym="${a.sym}">
         <td><span class="rank">${i+1}</span><span class="sym">${a.sym}</span></td>
-        <td>${price(a.price)}</td><td>${usd(a.mcap)}</td><td>${usd(a.vol)}</td>
-        <td class="${cls(a.d1)}">${pct(a.d1)}</td>
+        <td class="q-price">${price(a.price)}</td>
+        <td class="q-mcap">${usd(a.mcap)}</td>
+        <td class="q-vol">${usd(a.vol)}</td>
+        <td class="q-d1 ${cls(a.d1)}">${pct(a.d1)}</td>
         <td class="${cls(a.d30)}">${pct(a.d30)}</td>
         <td class="${cls(a.d365)}">${pct(a.d365)}</td>
         <td>${f5}</td>
@@ -572,12 +582,14 @@ async function page1(force){
   const P=(t,s,src,wide)=>panel(grid,{title:t,sub:s,src,wide});
   const rows=k=>mk.map(a=>({k:a.sym,v:a[k]}));
 
-  fill(P('Market capitalisation','Absolute size, USD.','CoinGecko'),
-       p=>barValue(p.body,rows('mcap')));
-  fill(P('24h trading volume','Spot volume across tracked venues.','CoinGecko'),
-       p=>barValue(p.body,rows('vol'),{color:C.acc2()}));
-  fill(P('Change on the day','24h price change.','CoinGecko'),
-       p=>barSigned(p.body,rows('d1')));
+  const pMcap=P('Market capitalisation','Absolute size, USD.','CoinGecko + Binance');
+  const pVol =P('24h trading volume','Spot volume across tracked venues.','CoinGecko');
+  const pDay =P('Change on the day','24h price change.','CoinGecko + Binance');
+  fill(pMcap,p=>barValue(p.body,rows('mcap')));
+  fill(pVol ,p=>barValue(p.body,rows('vol'),{color:C.acc2()}));
+  fill(pDay ,p=>barSigned(p.body,rows('d1')));
+  /* pVol is excluded: volume is not part of the quote tier (see refreshQuotes) */
+  QPANELS=[pMcap,pDay];
   fill(P('Change over the month','30d price change.','CoinGecko'),
        p=>barSigned(p.body,rows('d30')));
   fill(P('Change over twelve months','1y price change.','CoinGecko'),
@@ -1022,6 +1034,63 @@ function page3Lazy(){
 }
 
 /* ============================================================
+   quote tier — fast price refresh, independent of the full reload
+   ============================================================ */
+/* A full refresh is expensive and CoinGecko-bound: five calls, queued 1.2s
+   apart, so it cannot run every minute without tripping the keyless rate
+   limit. But the only numbers that actually move minute to minute — price,
+   24h change, 24h volume — are all available from ONE Binance call that needs
+   no key and has a far higher limit. So quotes refresh on their own fast
+   timer and the heavy history reload stays slow.
+   Market cap is re-derived as price x circulating supply, with supply taken
+   from the last CoinGecko fetch (supply moves far slower than price). */
+const FAST_MS=60*1000;
+let MAIN=[], QPANELS=[], lastQuote=0, quoting=false;
+
+async function refreshQuotes(){
+  if(quoting||booting||!MAIN.length) return;
+  quoting=true;
+  try{
+    const live=new Set(await loadPairs(false));
+    const want=MAIN.filter(a=>live.has(a.sym+'USDT'));
+    if(!want.length) return;
+    const syms=encodeURIComponent(JSON.stringify(want.map(a=>a.sym+'USDT')));
+    const t=await jget(`${BN}/ticker/24hr?symbols=${syms}`);
+    const q=new Map(t.map(x=>[x.symbol,x]));
+
+    for(const a of MAIN){
+      const x=q.get(a.sym+'USDT'); if(!x) continue;
+      const supply=(a.price&&a.mcap)?a.mcap/a.price:null;
+      a.price=+x.lastPrice;
+      a.d1=+x.priceChangePercent;
+      if(supply) a.mcap=a.price*supply;
+      /* deliberately NOT a.vol: the column is cross-venue spot volume from
+         CoinGecko (~$27B for BTC), while Binance reports only its own USDT
+         pair (~$1.4B). Overwriting it would silently swap the metric for one
+         20x smaller. Volume refreshes on the full reload instead. */
+    }
+
+    for(const a of MAIN){
+      const tr=document.querySelector(`#p1tw tr[data-sym="${a.sym}"]`);
+      if(!tr) continue;
+      const put=(sel,txt,extra)=>{const el=tr.querySelector(sel); if(!el)return;
+        el.textContent=txt; el.className=sel.slice(1)+(extra?' '+extra:'');};
+      put('.q-price',price(a.price));
+      put('.q-mcap',usd(a.mcap));
+      put('.q-d1',pct(a.d1),cls(a.d1));
+    }
+    for(const p of QPANELS) if(p.el.isConnected) fill(p,p._fn);
+    lastQuote=Date.now();
+    stampNow();
+  }catch(e){ /* a missed quote tick is harmless; the next one retries */ }
+  finally{ quoting=false; }
+}
+setInterval(()=>{ if(document.visibilityState==='visible') refreshQuotes(); },FAST_MS);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&Date.now()-lastQuote>=FAST_MS) refreshQuotes();
+});
+
+/* ============================================================
    boot
    ============================================================ */
 /* Auto-refresh cadence. Set to 0 to disable and refresh only by hand.
@@ -1039,12 +1108,19 @@ async function boot(force){
       .forEach(k=>localStorage.removeItem(k)); }catch{} }
   try{ await Promise.all([page1(force),page2(force),page3(force)]); }
   finally{
-    booting=false; lastBoot=Date.now();
+    booting=false; lastBoot=Date.now(); lastQuote=Date.now();
     b.disabled=false; b.textContent='Refresh';
-    document.getElementById('stamp').textContent=
-      'updated '+new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})
-      +(AUTO_MS?' · auto '+(AUTO_MS/60000)+'m':'');
+    stampNow();
+    refreshQuotes();            /* get a live quote immediately after a reload */
   }
+}
+
+const hhmm=t=>new Date(t).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+function stampNow(){
+  const el=document.getElementById('stamp'); if(!el) return;
+  el.textContent='quotes '+hhmm(lastQuote||Date.now())
+    +' · full '+hhmm(lastBoot||Date.now())
+    +(FAST_MS?' · every '+(FAST_MS/60000)+'m':'');
 }
 
 /* Refresh on a timer, but only while the page is actually on screen — a phone
