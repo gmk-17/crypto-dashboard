@@ -108,6 +108,7 @@ footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;
       <button class="tab" role="tab" id="t1" aria-selected="true"  onclick="showPage(1)">Market</button>
       <button class="tab" role="tab" id="t2" aria-selected="false" onclick="showPage(2)">On-chain</button>
       <button class="tab" role="tab" id="t3" aria-selected="false" onclick="showPage(3)">Rates</button>
+      <button class="tab" role="tab" id="t4" aria-selected="false" onclick="showPage(4)">Arb</button>
     </div>
     <button class="btn" id="refresh" onclick="boot(true)">Refresh</button>
   </div>
@@ -116,6 +117,7 @@ footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;
   <section class="page" id="page1"></section>
   <section class="page" id="page2" hidden></section>
   <section class="page" id="page3" hidden></section>
+  <section class="page" id="page4" hidden></section>
 </main>
 <footer>
   Sources: CoinGecko · Binance · DefiLlama · Coin Metrics Community · Dune (optional)<br>
@@ -285,7 +287,7 @@ function plotBase(el,extra={}){
     style:{background:'transparent',color:css('--mut'),fontSize:isNarrow()?'10px':'11px'},
   },extra);
 }
-const PAGES=[1,2,3];
+const PAGES=[1,2,3,4];
 function showPage(n){
   for(const i of PAGES){
     document.getElementById('page'+i).hidden=n!==i;
@@ -295,6 +297,7 @@ function showPage(n){
   window.scrollTo(0,0);
   if(n===2) page2Lazy();
   if(n===3) page3Lazy();
+  if(n===4) page4Lazy();
   requestAnimationFrame(()=>requestAnimationFrame(redrawVisible));
 }
 </script>
@@ -1111,6 +1114,157 @@ function page3Lazy(){
 }
 
 /* ============================================================
+   PAGE 4 — spot vs perpetual basis on Binance
+   ============================================================ */
+/* Every asset on the main table has both a spot and a USDT-M perp, so the
+   universe is just those plus the BRL pair. */
+const ARB_CRYPTO=['BTC','ETH','SOL','BNB','XRP','TRX','ZEC','HYPE','DOGE','XMR',
+                  'LINK','ADA','NEAR','UNI','AVAX','SUI','AAVE','DOT','ARB',
+                  'FIL','OP','DYDX'];
+const ARB_PAIRS=[
+  /* The two legs are NOT the same instrument: spot is USDT/BRL while the perp
+     is USD/BRL settled in USDT. The difference therefore carries the USDT peg
+     deviation on top of the basis. Flagged in the UI rather than hidden. */
+  {k:'USDT/BRL', spot:'USDTBRL', perp:'USDBRLUSDT', fx:true},
+  ...ARB_CRYPTO.map(a=>({k:a, spot:a+'USDT', perp:a+'USDT'}))
+];
+
+/* funding intervals change rarely; a day-long cache keeps them off the hot path */
+const loadFundingInfo=f=>cache('fundinfo',async()=>{
+  const d=await jget(`${FAPI}/fundingInfo`).catch(()=>[]);
+  return d.map(x=>[x.symbol,+x.fundingIntervalHours||8]);
+},f,UNIVERSE_TTL);
+
+async function loadArb(force){
+  const spotSyms=encodeURIComponent(JSON.stringify(ARB_PAIRS.map(p=>p.spot)));
+  const [sb,fb,pi,fi]=await Promise.all([
+    jget(`${BN}/ticker/bookTicker?symbols=${spotSyms}`),
+    /* futures bookTicker ignores a symbols filter and always returns every
+       contract, so it is filtered client side */
+    jget(`${FAPI}/ticker/bookTicker`),
+    jget(`${FAPI}/premiumIndex`),
+    loadFundingInfo(false)
+  ]);
+  const S=new Map(sb.map(x=>[x.symbol,x]));
+  const F=new Map((Array.isArray(fb)?fb:[fb]).map(x=>[x.symbol,x]));
+  const P=new Map(pi.map(x=>[x.symbol,x]));
+  const IV=new Map(fi);
+
+  return ARB_PAIRS.map(p=>{
+    const sx=S.get(p.spot), fx=F.get(p.perp), px=P.get(p.perp);
+    if(!sx||!fx) return {...p,ok:false};
+    const sBid=+sx.bidPrice, sAsk=+sx.askPrice, fBid=+fx.bidPrice, fAsk=+fx.askPrice;
+    const sMid=(sBid+sAsk)/2, fMid=(fBid+fAsk)/2;
+    if(!(sMid>0)||!(fMid>0)) return {...p,ok:false};
+    const hours=IV.get(p.perp)||8;
+    const rate=px?+px.lastFundingRate:null;
+    return {...p, ok:true,
+      spot:sMid, perp:fMid,
+      basis:(fMid/sMid-1)*100,
+      /* what a cash-and-carry could actually transact at right now:
+         buy spot at the ask, sell the perp at the bid */
+      edge:(fBid-sAsk)/sAsk*100,
+      mark:px?+px.markPrice:null,
+      index:px?+px.indexPrice:null,
+      hours, rate:rate==null?null:rate*100,
+      ann:rate==null?null:rate*(24/hours)*365*100};
+  });
+}
+
+async function page4(force){
+  const host=document.getElementById('page4');
+  host.innerHTML=`<div class="tiles" id="p4tiles"></div>
+    <div class="panel wide" id="p4table"></div><div class="grid" id="p4grid"></div>`;
+  const tiles=document.getElementById('p4tiles'), grid=document.getElementById('p4grid');
+  const slot=k=>{const e=document.createElement('div');e.className='tile';
+    e.innerHTML=`<div class="k">${k}</div><div class="v">…</div><div class="s"></div>`;
+    tiles.appendChild(e);
+    return (v,sub,c)=>{e.querySelector('.v').textContent=v;
+      const se=e.querySelector('.s'); se.textContent=sub||''; se.className='s '+(c||'');};};
+  const tBrl=slot('USDT/BRL basis'), tBrlF=slot('USDT/BRL funding (ann.)'),
+        tWide=slot('Widest crypto basis'), tCarry=slot('Best carry (ann.)');
+
+  document.getElementById('p4table').innerHTML=
+    `<div class="ph"><h3>Spot vs perpetual basis</h3><span class="src">Binance spot + USD-M futures</span></div>
+     <p class="sub">Basis is perp mid over spot mid. <b>Edge</b> is what a cash-and-carry
+        could transact at right now — buy spot at the ask, sell the perp at the bid —
+        before fees. Positive funding means longs pay shorts, so a short-perp /
+        long-spot carry earns it.</p>
+     <div class="tw" id="p4tw"><div class="skel"></div></div>`;
+
+  const P=(t,sub,wide)=>panel(grid,{title:t,sub,src:'Binance',wide});
+  const pBasis=P('Basis by asset','Perp premium (+) or discount (−) to spot.');
+  const pCarry=P('Funding, annualised','Positive = shorts are paid to hold the carry.');
+  ARB_PANELS=[pBasis,pCarry];
+
+  await renderArb(force);
+  ARB_READY=true;
+}
+
+/* separated so the fast tier can re-render without rebuilding the page */
+async function renderArb(force){
+  let rows;
+  try{ rows=await loadArb(force); }
+  catch(e){
+    const tw=document.getElementById('p4tw');
+    if(tw) tw.innerHTML=`<div class="state err">Could not load — ${e.message}</div>`;
+    return;
+  }
+  ARB_ROWS=rows;
+  const ok=rows.filter(r=>r.ok);
+  const crypto=ok.filter(r=>!r.fx);
+  const brl=ok.find(r=>r.fx);
+
+  const t=document.getElementById('p4tiles');
+  if(t&&t.children.length>=4){
+    const set=(i,v,sub,c)=>{const e=t.children[i];
+      e.querySelector('.v').textContent=v;
+      const se=e.querySelector('.s'); se.textContent=sub||''; se.className='s '+(c||'');};
+    if(brl){ set(0,pctf(brl.basis),'spot '+brl.spot.toFixed(4)+' · perp '+brl.perp.toFixed(4),cls(brl.basis));
+             set(1,brl.ann==null?'—':pctf(brl.ann),
+                 brl.rate==null?'':rawf(brl.rate)+' / '+brl.hours+'h',cls(brl.ann)); }
+    const w=crypto.slice().sort((a,b)=>Math.abs(b.basis)-Math.abs(a.basis))[0];
+    if(w) set(2,pctf(w.basis),w.k,cls(w.basis));
+    const c=ok.filter(r=>r.ann!=null).sort((a,b)=>b.ann-a.ann)[0];
+    if(c) set(3,pctf(c.ann),c.k+' · funding',cls(c.ann));
+  }
+
+  /* enough precision that a sub-1% basis is actually visible in the two price
+     columns — 5.48 vs 5.55 hides it, 5.4800 vs 5.5563 does not */
+  const dp=n=>n>=1000?0:n>=100?2:n>=1?4:n>=0.01?5:7;
+  const tw=document.getElementById('p4tw');
+  if(tw) tw.innerHTML=`<table><thead><tr>
+    <th>Pair</th><th>Spot</th><th>Perp</th><th>Basis</th><th>Edge</th>
+    <th>Funding</th><th>Interval</th><th>Funding ann.</th>
+    </tr></thead><tbody>${rows.map(r=>{
+      if(!r.ok) return `<tr><td><span class="sym">${r.k}</span></td>
+        <td colspan="7" class="na">no quote</td></tr>`;
+      return `<tr>
+        <td><span class="sym">${r.k}</span>${r.fx?' <span class="pill">FX</span>':''}</td>
+        <td>${r.spot.toFixed(dp(r.spot))}</td>
+        <td>${r.perp.toFixed(dp(r.perp))}</td>
+        <td class="${cls(r.basis)}">${pctf(r.basis)}</td>
+        <td class="${cls(r.edge)}">${pctf(r.edge)}</td>
+        <td class="${cls(r.rate)}">${r.rate==null?'—':rawf(r.rate)}</td>
+        <td>${r.hours}h</td>
+        <td class="${cls(r.ann)}">${r.ann==null?'—':pctf(r.ann)}</td></tr>`;
+    }).join('')}</tbody></table>`;
+
+  if(ARB_PANELS.length){
+    const [pBasis,pCarry]=ARB_PANELS;
+    fill(pBasis,p=>barSigned(p.body,ok.map(r=>({k:r.k,v:r.basis})),{fmt:pctf}));
+    fill(pCarry,p=>barSigned(p.body,ok.filter(r=>r.ann!=null).map(r=>({k:r.k,v:r.ann})),{fmt:pctf}));
+    if(brl) setTimeout(()=>pBasis.note(
+      'USDT/BRL is not a like-for-like pair: spot is USDT/BRL while the perp is '
+      +'USD/BRL settled in USDT, so its basis also carries the USDT peg deviation. '
+      +(brl.index?('The perp\'s own index is '+brl.index.toFixed(4)+' against a mid of '
+      +brl.perp.toFixed(4)+'.'):'')),0);
+  }
+}
+let ARB_PANELS=[], ARB_ROWS=[], ARB_READY=false, p4done=false;
+function page4Lazy(){ if(!p4done){ p4done=true; redrawVisible(); } }
+
+/* ============================================================
    quote tier — fast price refresh, independent of the full reload
    ============================================================ */
 /* A full refresh is expensive and CoinGecko-bound: five calls, queued 1.2s
@@ -1157,6 +1311,13 @@ async function refreshQuotes(){
       put('.q-d1',pct(a.d1),cls(a.d1));
     }
     for(const p of QPANELS) if(p.el.isConnected) fill(p,p._fn);
+
+    /* Basis moves fast, so the arb tab refreshes on this timer too — but only
+       while it is actually on screen. Its payload is ~330KB (the futures
+       bookTicker and premiumIndex are returned whole), which is fine when you
+       are watching it and wasteful when you are not. */
+    if(ARB_READY&&!document.getElementById('page4').hidden) await renderArb(true);
+
     lastQuote=Date.now();
     stampNow();
   }catch(e){ /* a missed quote tick is harmless; the next one retries */ }
@@ -1183,7 +1344,7 @@ async function boot(force){
   if(force){ mem.clear();
     try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe')
       .forEach(k=>localStorage.removeItem(k)); }catch{} }
-  try{ await Promise.all([page1(force),page2(force),page3(force)]); }
+  try{ await Promise.all([page1(force),page2(force),page3(force),page4(force)]); }
   finally{
     booting=false; lastBoot=Date.now(); lastQuote=Date.now();
     b.disabled=false; b.textContent='Refresh';
