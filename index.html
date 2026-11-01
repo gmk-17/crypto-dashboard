@@ -1135,6 +1135,64 @@ const loadFundingInfo=f=>cache('fundinfo',async()=>{
   return d.map(x=>[x.symbol,+x.fundingIntervalHours||8]);
 },f,UNIVERSE_TTL);
 
+/* ---- BRL stablecoin premium vs the real dollar ------------------------- */
+const BCB='https://api.bcb.gov.br/dados/serie/bcdata.sgs.1/dados';
+const BRL_PAIRS=[{k:'USDT/BRL',sym:'USDTBRL'},{k:'USDC/BRL',sym:'USDCBRL'}];
+const HORIZONS=[1,7,30];           /* days assumed for the gap to close */
+const HOUR=60*60*1000;
+
+/* PTAX is fixed once per business day, so it is stale overnight and all
+   weekend — the date is shown next to it rather than implied to be live. */
+const loadPtax=f=>cache('ptax',async()=>{
+  const d=await jget(`${BCB}/ultimos/5?formato=json`);
+  const last=d[d.length-1];
+  return {rate:+last.valor, date:last.data};
+},f,HOUR);
+
+const loadBrlHist=f=>cache('brlhist',async()=>{
+  const dmy=t=>{const d=new Date(t);
+    return `${String(d.getUTCDate()).padStart(2,'0')}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${d.getUTCFullYear()}`;};
+  const now=Date.now();
+  const [kt,kc,px]=await Promise.all([
+    jget(`${BN}/klines?symbol=USDTBRL&interval=1d&limit=400`),
+    jget(`${BN}/klines?symbol=USDCBRL&interval=1d&limit=400`),
+    jget(`${BCB}?formato=json&dataInicial=${dmy(now-365*864e5)}&dataFinal=${dmy(now)}`)
+  ]);
+  const ptax={};
+  for(const r of px){ const [d,m,y]=r.data.split('/'); ptax[`${y}-${m}-${d}`]=+r.valor; }
+  const day=t=>new Date(t).toISOString().slice(0,10);
+  const out=[];
+  for(const [kl,label] of [[kt,'USDT'],[kc,'USDC']])
+    for(const k of kl){
+      const d=day(k[0]), ref=ptax[d];
+      if(ref) out.push({t:k[0], v:(+k[4]/ref-1)*100, s:label});
+    }
+  return out;
+},f,HOUR);
+
+async function loadBrlPremium(force){
+  const syms=encodeURIComponent(JSON.stringify(BRL_PAIRS.map(p=>p.sym)));
+  const [bk,pi,px]=await Promise.all([
+    jget(`${BN}/ticker/bookTicker?symbols=${syms}`),
+    jget(`${FAPI}/premiumIndex?symbol=USDBRLUSDT`).catch(()=>null),
+    loadPtax(force).catch(()=>null)
+  ]);
+  const B=new Map(bk.map(x=>[x.symbol,x]));
+  const refs=[];
+  if(pi&&+pi.indexPrice>0) refs.push({ref:'Binance index (live)',rate:+pi.indexPrice});
+  if(px) refs.push({ref:`PTAX ${px.date}`,rate:px.rate,stale:true});
+
+  const rows=[];
+  for(const r of refs) for(const p of BRL_PAIRS){
+    const x=B.get(p.sym); if(!x) continue;
+    const mid=(+x.bidPrice + +x.askPrice)/2;
+    const abs=mid-r.rate, pctv=(mid/r.rate-1)*100;
+    rows.push({k:p.k, ref:r.ref, stale:!!r.stale, spot:mid, rate:r.rate,
+      abs, pct:pctv, ann:HORIZONS.map(h=>pctv*365/h)});
+  }
+  return rows;
+}
+
 async function loadArb(force){
   const spotSyms=encodeURIComponent(JSON.stringify(ARB_PAIRS.map(p=>p.spot)));
   const [sb,fb,pi,fi]=await Promise.all([
@@ -1174,6 +1232,7 @@ async function loadArb(force){
 async function page4(force){
   const host=document.getElementById('page4');
   host.innerHTML=`<div class="tiles" id="p4tiles"></div>
+    <div class="panel wide" id="p4brl"></div>
     <div class="panel wide" id="p4table"></div><div class="grid" id="p4grid"></div>`;
   const tiles=document.getElementById('p4tiles'), grid=document.getElementById('p4grid');
   const slot=k=>{const e=document.createElement('div');e.className='tile';
@@ -1197,8 +1256,55 @@ async function page4(force){
   const pCarry=P('Funding, annualised','Positive = shorts are paid to hold the carry.');
   ARB_PANELS=[pBasis,pCarry];
 
+  document.getElementById('p4brl').innerHTML=
+    `<div class="ph"><h3>BRL stablecoin premium</h3>
+       <span class="src">Binance spot + BCB PTAX</span></div>
+     <p class="sub">What a dollar costs in BRL through a stablecoin versus the real
+        dollar. Annualised figures assume the gap closes over the stated horizon —
+        a spot spread has no term of its own, so all three are shown rather than
+        picking one.</p>
+     <div class="tw" id="p4brltw"><div class="skel"></div></div>`;
+  const bg=document.createElement('div'); bg.className='grid';
+  bg.style.marginTop='12px';
+  document.getElementById('p4brl').appendChild(bg);
+  const pHist=panel(bg,{title:'Premium vs PTAX, 1 year',
+    sub:'Daily close against the same day\'s PTAX fix.',src:'Binance + BCB',wide:true});
+  fill(pHist,async p=>{
+    const d=await loadBrlHist(force);
+    if(!d.length) throw new Error('no overlapping days');
+    setTimeout(()=>pHist.note('Binance closes at 00:00 UTC while PTAX is fixed around '
+      +'13:00 BRT, so single days carry timing noise; the level and the trend are '
+      +'the signal, not any one point.'),0);
+    return lineTime(p.body,d,{fmt:v=>(v>=0?'+':'')+v.toFixed(2)+'%',
+      height:isNarrow()?230:280});
+  });
+  BRL_READY=true;
+  await renderBrl(force);
+
   await renderArb(force);
   ARB_READY=true;
+}
+
+async function renderBrl(force){
+  const tw=document.getElementById('p4brltw'); if(!tw) return;
+  let rows;
+  try{ rows=await loadBrlPremium(force); }
+  catch(e){ tw.innerHTML=`<div class="state err">Could not load — ${e.message}</div>`; return; }
+  if(!rows.length){ tw.innerHTML='<div class="state">No reference rate available.</div>'; return; }
+  const sg=v=>(v>=0?'+':'')+v;
+  tw.innerHTML=`<table><thead><tr>
+    <th>Pair</th><th>Reference</th><th>Spot BRL</th><th>Ref BRL</th>
+    <th>Premium BRL</th><th>Premium</th>
+    ${HORIZONS.map(h=>`<th>Ann. ${h}d</th>`).join('')}
+    </tr></thead><tbody>${rows.map(r=>`<tr>
+      <td><span class="sym">${r.k}</span></td>
+      <td>${r.ref}${r.stale?' <span class="pill">daily fix</span>':''}</td>
+      <td>${r.spot.toFixed(4)}</td>
+      <td>${r.rate.toFixed(4)}</td>
+      <td class="${cls(r.abs)}">${sg(r.abs.toFixed(4))}</td>
+      <td class="${cls(r.pct)}">${pctf(r.pct)}</td>
+      ${r.ann.map(a=>`<td class="${cls(a)}">${pctf(a)}</td>`).join('')}
+    </tr>`).join('')}</tbody></table>`;
 }
 
 /* separated so the fast tier can re-render without rebuilding the page */
@@ -1261,7 +1367,7 @@ async function renderArb(force){
       +brl.perp.toFixed(4)+'.'):'')),0);
   }
 }
-let ARB_PANELS=[], ARB_ROWS=[], ARB_READY=false, p4done=false;
+let ARB_PANELS=[], ARB_ROWS=[], ARB_READY=false, BRL_READY=false, p4done=false;
 function page4Lazy(){ if(!p4done){ p4done=true; redrawVisible(); } }
 
 /* ============================================================
@@ -1316,7 +1422,10 @@ async function refreshQuotes(){
        while it is actually on screen. Its payload is ~330KB (the futures
        bookTicker and premiumIndex are returned whole), which is fine when you
        are watching it and wasteful when you are not. */
-    if(ARB_READY&&!document.getElementById('page4').hidden) await renderArb(true);
+    if(!document.getElementById('page4').hidden){
+      if(ARB_READY) await renderArb(true);
+      if(BRL_READY) await renderBrl(false);  /* PTAX is cached; only the book re-reads */
+    }
 
     lastQuote=Date.now();
     stampNow();
