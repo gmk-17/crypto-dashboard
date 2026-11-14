@@ -76,6 +76,7 @@ th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:
 td{padding:8px 9px;border-bottom:1px solid color-mix(in srgb,var(--bd) 55%,transparent);text-align:right}
 tbody tr:last-child td{border-bottom:0}
 .sym{font-weight:640}.rank{color:var(--dim);margin-right:7px;font-size:11px}
+.plogo{width:16px;height:16px;border-radius:50%;vertical-align:-3px;margin-right:6px;background:var(--panel2)}
 .up{color:var(--up)}.down{color:var(--down)}.na{color:var(--dim)}
 
 /* ---------- dune ---------- */
@@ -96,7 +97,8 @@ footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;
   .tile .v{font-size:18px}
   .hrow{padding:9px 11px;gap:8px}
   .brand{font-size:14px;width:100%;margin-bottom:2px}
-  .tab{padding:6px 11px;font-size:12.5px}
+  .tab{padding:6px 9px;font-size:12.5px}
+  .tabs{overflow-x:auto;max-width:100%}
 }
 </style>
 </head>
@@ -109,6 +111,7 @@ footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;
       <button class="tab" role="tab" id="t2" aria-selected="false" onclick="showPage(2)">On-chain</button>
       <button class="tab" role="tab" id="t3" aria-selected="false" onclick="showPage(3)">Rates</button>
       <button class="tab" role="tab" id="t4" aria-selected="false" onclick="showPage(4)">Arb</button>
+      <button class="tab" role="tab" id="t5" aria-selected="false" onclick="showPage(5)">Revenue</button>
     </div>
     <button class="btn" id="refresh" onclick="boot(true)">Refresh</button>
   </div>
@@ -118,6 +121,7 @@ footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;
   <section class="page" id="page2" hidden></section>
   <section class="page" id="page3" hidden></section>
   <section class="page" id="page4" hidden></section>
+  <section class="page" id="page5" hidden></section>
 </main>
 <footer>
   Sources: CoinGecko · Binance · DefiLlama · Coin Metrics Community · Dune (optional)<br>
@@ -287,7 +291,7 @@ function plotBase(el,extra={}){
     style:{background:'transparent',color:css('--mut'),fontSize:isNarrow()?'10px':'11px'},
   },extra);
 }
-const PAGES=[1,2,3,4];
+const PAGES=[1,2,3,4,5];
 function showPage(n){
   for(const i of PAGES){
     document.getElementById('page'+i).hidden=n!==i;
@@ -298,6 +302,7 @@ function showPage(n){
   if(n===2) page2Lazy();
   if(n===3) page3Lazy();
   if(n===4) page4Lazy();
+  if(n===5) page5Lazy();
   requestAnimationFrame(()=>requestAnimationFrame(redrawVisible));
 }
 </script>
@@ -1371,6 +1376,121 @@ let ARB_PANELS=[], ARB_ROWS=[], ARB_READY=false, BRL_READY=false, p4done=false;
 function page4Lazy(){ if(!p4done){ p4done=true; redrawVisible(); } }
 
 /* ============================================================
+   PAGE 5 — protocol revenue (DefiLlama)
+   ============================================================ */
+/* /overview/fees?dataType=dailyRevenue is CORS-open and keyless but ~5.4MB
+   even with both chart flags off (every protocol carries per-chain
+   breakdowns). So the tab loads only once it is opened, and only the trimmed
+   top 50 is cached — for an hour, since DefiLlama updates revenue daily.
+   Rows are DefiLlama's own products (Hyperliquid Perps and Hyperliquid Spot
+   are separate), as the API returns them. Chains (protocolType "chain":
+   Tron, Ethereum, Base…) are excluded — they are not protocols. */
+const REV_N=50, REV_TTL=60*60*1000;
+const loadRevenue=force=>cache('revenue',async()=>{
+  const d=await jget(`${LL}/overview/fees?excludeTotalDataChart=true`
+    +`&excludeTotalDataChartBreakdown=true&dataType=dailyRevenue`,{timeout:90000});
+  const rows=(d.protocols||[])
+    .filter(p=>p.protocolType!=='chain'&&p.total30d>0)
+    .sort((a,b)=>b.total30d-a.total30d)
+    .slice(0,REV_N)
+    .map(p=>({name:p.displayName||p.name, slug:p.slug, cat:p.category||'—',
+      logo:p.logo, chains:(p.chains||[]).length, chain1:(p.chains||[])[0]||'',
+      d1:p.total24h, d7:p.total7d, d30:p.total30d, prev30:p.total60dto30d,
+      ch30:p.change_30dover30d, y1:p.total1y}));
+  const all=(d.protocols||[]).filter(p=>p.protocolType!=='chain')
+    .reduce((s,p)=>s+(p.total30d||0),0);
+  return {rows, all, t:Date.now()};
+},force,REV_TTL);
+
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let p5done=false;
+function page5Lazy(){ if(!p5done){ p5done=true; page5(false); } }
+
+async function page5(force){
+  const host=document.getElementById('page5');
+  host.innerHTML=`<div class="tiles" id="p5tiles"></div>
+    <div class="panel wide" id="p5table"></div><div class="grid" id="p5grid"></div>`;
+  const tiles=document.getElementById('p5tiles'), grid=document.getElementById('p5grid');
+  const slot=k=>{const e=document.createElement('div');e.className='tile';
+    e.innerHTML=`<div class="k">${k}</div><div class="v">…</div><div class="s"></div>`;
+    tiles.appendChild(e);
+    return (v,sub,c)=>{e.querySelector('.v').textContent=v;
+      const se=e.querySelector('.s'); se.textContent=sub||''; se.className='s '+(c||'');};};
+  const tTop=slot('Top-50 revenue, 30d'), tShare=slot('Top-50 share'),
+        tLead=slot('#1 protocol'), tExTether=slot('Top 50 ex-stablecoin issuers');
+
+  document.getElementById('p5table').innerHTML=
+    `<div class="ph"><h3>Protocol revenue — top ${REV_N} by 30 days</h3><span class="src">DefiLlama</span></div>
+     <p class="sub">Revenue is what the protocol keeps (fees minus what goes to LPs and
+        suppliers), per DefiLlama's methodology for each adapter. <b>Δ 30d</b> compares the
+        last 30 days with the 30 before. <b>Run-rate</b> is 30d × 365/30. Chains excluded.</p>
+     <div class="tw" id="p5tw"><div class="skel"></div></div>`;
+  const pBar=panel(grid,{title:'Top 20 by 30-day revenue',src:'DefiLlama',
+    sub:'Bars in USD; label is 30d vs prior 30d.'});
+  const pCat=panel(grid,{title:'Top 50 by category',src:'DefiLlama',
+    sub:'Sum of 30-day revenue of the top 50, grouped by DefiLlama category.'});
+
+  let R;
+  try{ R=await retrying(()=>loadRevenue(force)); }
+  catch(e){
+    document.getElementById('p5tw').innerHTML=`<div class="state err">Could not load — ${esc(e.message||e)}</div>`;
+    pBar.msg('—',true); pCat.msg('—',true); return;
+  }
+  const rows=R.rows, sum=rows.reduce((s,r)=>s+r.d30,0);
+  const prevSum=rows.reduce((s,r)=>s+(r.prev30||0),0);
+  const chg=prevSum?(sum/prevSum-1)*100:null;
+  tTop(usd(sum),pct(chg)+' vs prior 30d',cls(chg));
+  tShare(R.all?(sum/R.all*100).toFixed(1)+'%':'—','of '+usd(R.all)+' across all protocols');
+  tLead(rows[0]?.name||'—',rows[0]?usd(rows[0].d30)+' in 30d':'');
+  const exI=rows.filter(r=>r.cat!=='Stablecoin Issuer').reduce((s,r)=>s+r.d30,0);
+  tExTether(usd(exI),'Tether, Circle, Paxos… left out');
+
+  document.getElementById('p5tw').innerHTML=`<table><thead><tr>
+    <th>Protocol</th><th>Category</th><th>Revenue 30d</th><th>Δ 30d</th>
+    <th>7d</th><th>24h</th><th>Run-rate</th><th>1y</th><th>Share</th></tr></thead><tbody>
+    ${rows.map((r,i)=>`<tr>
+      <td><span class="rank">${i+1}</span><img class="plogo" loading="lazy" alt=""
+        src="${esc(r.logo||'')}" onerror="this.style.visibility='hidden'"><a class="sym"
+        style="color:inherit;text-decoration:none" target="_blank" rel="noopener"
+        href="https://defillama.com/protocol/${encodeURIComponent(r.slug||'')}">${esc(r.name)}</a></td>
+      <td style="text-align:left;color:var(--mut)">${esc(r.cat)}</td>
+      <td><b>${usd(r.d30)}</b></td>
+      <td class="${cls(r.ch30)}">${pct(r.ch30)}</td>
+      <td>${usd(r.d7)}</td><td>${usd(r.d1)}</td>
+      <td>${usd(r.d30*365/30)}</td><td>${usd(r.y1)}</td>
+      <td class="na">${(r.d30/sum*100).toFixed(1)}%</td></tr>`).join('')}
+    </tbody></table>`;
+
+  fill(pBar,async p=>{
+    const d=rows.slice(0,20);
+    return Plot.plot(plotBase(p.body,{
+      height:d.length*22+30, marginLeft:isNarrow()?110:150, marginRight:isNarrow()?52:60,
+      x:{grid:true,tickFormat:v=>usd(v).replace('.00',''),label:null,ticks:isNarrow()?3:4},
+      y:{label:null,domain:d.map(r=>r.name),
+         tickFormat:s=>s.length>(isNarrow()?16:22)?s.slice(0,isNarrow()?15:21)+'…':s},
+      marks:[
+        Plot.barX(d,{x:'d30',y:'name',fill:css('--acc'),
+          title:r=>`${r.name}\n${r.cat}\n30d ${usd(r.d30)} (${pct(r.ch30)})`}),
+        Plot.text(d,{x:'d30',y:'name',text:r=>pct(r.ch30),dx:4,textAnchor:'start',
+          fill:r=>r.ch30==null?css('--dim'):r.ch30>=0?css('--up'):css('--down')}),
+        Plot.ruleX([0])]}));
+  });
+  fill(pCat,async p=>{
+    const m=d3.rollups(rows,v=>d3.sum(v,r=>r.d30),r=>r.cat)
+      .map(([cat,v])=>({cat,v})).sort((a,b)=>b.v-a.v);
+    return Plot.plot(plotBase(p.body,{
+      height:m.length*22+30, marginLeft:isNarrow()?110:140, marginRight:isNarrow()?52:60,
+      x:{grid:true,tickFormat:v=>usd(v).replace('.00',''),label:null,ticks:isNarrow()?3:4},
+      y:{label:null,domain:m.map(r=>r.cat)},
+      marks:[
+        Plot.barX(m,{x:'v',y:'cat',fill:css('--acc2')}),
+        Plot.text(m,{x:'v',y:'cat',text:r=>(r.v/sum*100).toFixed(0)+'%',dx:4,
+          textAnchor:'start',fill:css('--mut')}),
+        Plot.ruleX([0])]}));
+  });
+}
+
+/* ============================================================
    quote tier — fast price refresh, independent of the full reload
    ============================================================ */
 /* A full refresh is expensive and CoinGecko-bound: five calls, queued 1.2s
@@ -1451,9 +1571,12 @@ async function boot(force){
   booting=true;
   const b=document.getElementById('refresh'); b.disabled=true; b.textContent='…';
   if(force){ mem.clear();
-    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe')
+    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe'&&k!==CK+'revenue')
       .forEach(k=>localStorage.removeItem(k)); }catch{} }
-  try{ await Promise.all([page1(force),page2(force),page3(force),page4(force)]); }
+  try{ await Promise.all([page1(force),page2(force),page3(force),page4(force),
+                           /* revenue is daily data on a 1h TTL and a 5MB fetch,
+                              so a forced refresh does not refetch it */
+                           p5done?page5(false):null]); }
   finally{
     booting=false; lastBoot=Date.now(); lastQuote=Date.now();
     b.disabled=false; b.textContent='Refresh';
