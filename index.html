@@ -1384,20 +1384,21 @@ function page4Lazy(){ if(!p4done){ p4done=true; redrawVisible(); } }
    top 50 is cached — for an hour, since DefiLlama updates revenue daily.
    Rows are DefiLlama's own products (Hyperliquid Perps and Hyperliquid Spot
    are separate), as the API returns them. Chains (protocolType "chain":
-   Tron, Ethereum, Base…) are excluded — they are not protocols. */
-const REV_N=50, REV_TTL=60*60*1000;
-const loadRevenue=force=>cache('revenue',async()=>{
+   Tron, Ethereum, Base…) are ranked alongside, tagged — for a chain,
+   "revenue" is mostly burned fees, not money a treasury keeps. */
+const REV_N=100, REV_TTL=60*60*1000;
+const loadRevenue=force=>cache('revenue100',async()=>{
   const d=await jget(`${LL}/overview/fees?excludeTotalDataChart=true`
     +`&excludeTotalDataChartBreakdown=true&dataType=dailyRevenue`,{timeout:90000});
   const rows=(d.protocols||[])
-    .filter(p=>p.protocolType!=='chain'&&p.total30d>0)
+    .filter(p=>p.total30d>0)
     .sort((a,b)=>b.total30d-a.total30d)
     .slice(0,REV_N)
-    .map(p=>({name:p.displayName||p.name, slug:p.slug, cat:p.category||'—',
+    .map(p=>({name:p.displayName||p.name, slug:p.slug, chain:p.protocolType==='chain', cat:p.category||'—',
       logo:p.logo, chains:(p.chains||[]).length, chain1:(p.chains||[])[0]||'',
       d1:p.total24h, d7:p.total7d, d30:p.total30d, prev30:p.total60dto30d,
       ch30:p.change_30dover30d, y1:p.total1y}));
-  const all=(d.protocols||[]).filter(p=>p.protocolType!=='chain')
+  const all=(d.protocols||[])
     .reduce((s,p)=>s+(p.total30d||0),0);
   return {rows, all, t:Date.now()};
 },force,REV_TTL);
@@ -1416,19 +1417,21 @@ async function page5(force){
     tiles.appendChild(e);
     return (v,sub,c)=>{e.querySelector('.v').textContent=v;
       const se=e.querySelector('.s'); se.textContent=sub||''; se.className='s '+(c||'');};};
-  const tTop=slot('Top-50 revenue, 30d'), tShare=slot('Top-50 share'),
-        tLead=slot('#1 protocol'), tExTether=slot('Top 50 ex-stablecoin issuers');
+  const tTop=slot(`Top-${REV_N} revenue, 30d`), tShare=slot(`Top-${REV_N} share`),
+        tLead=slot('#1 by revenue'), tExTether=slot(`Top ${REV_N} ex-stablecoin issuers`);
 
   document.getElementById('p5table').innerHTML=
-    `<div class="ph"><h3>Protocol revenue — top ${REV_N} by 30 days</h3><span class="src">DefiLlama</span></div>
+    `<div class="ph"><h3>Protocol & chain revenue — top ${REV_N} by 30 days</h3><span class="src">DefiLlama</span></div>
      <p class="sub">Revenue is what the protocol keeps (fees minus what goes to LPs and
         suppliers), per DefiLlama's methodology for each adapter. <b>Δ 30d</b> compares the
-        last 30 days with the 30 before. <b>Run-rate</b> is 30d × 365/30. Chains excluded.</p>
+        last 30 days with the 30 before. <b>Run-rate</b> is 30d × 365/30. Rows tagged <span class="pill">chain</span>
+        are L1/L2s, whose revenue is mostly fees burned (Ethereum) or paid to the network,
+        not kept by a treasury.</p>
      <div class="tw" id="p5tw"><div class="skel"></div></div>`;
   const pBar=panel(grid,{title:'Top 20 by 30-day revenue',src:'DefiLlama',
     sub:'Bars in USD; label is 30d vs prior 30d.'});
-  const pCat=panel(grid,{title:'Top 50 by category',src:'DefiLlama',
-    sub:'Sum of 30-day revenue of the top 50, grouped by DefiLlama category.'});
+  const pCat=panel(grid,{title:`Top ${REV_N} by category`,src:'DefiLlama',
+    sub:'Sum of 30-day revenue of the top '+REV_N+', grouped by DefiLlama category.'});
 
   let R;
   try{ R=await retrying(()=>loadRevenue(force)); }
@@ -1440,7 +1443,7 @@ async function page5(force){
   const prevSum=rows.reduce((s,r)=>s+(r.prev30||0),0);
   const chg=prevSum?(sum/prevSum-1)*100:null;
   tTop(usd(sum),pct(chg)+' vs prior 30d',cls(chg));
-  tShare(R.all?(sum/R.all*100).toFixed(1)+'%':'—','of '+usd(R.all)+' across all protocols');
+  tShare(R.all?(sum/R.all*100).toFixed(1)+'%':'—','of '+usd(R.all)+' across everything tracked');
   tLead(rows[0]?.name||'—',rows[0]?usd(rows[0].d30)+' in 30d':'');
   const exI=rows.filter(r=>r.cat!=='Stablecoin Issuer').reduce((s,r)=>s+r.d30,0);
   tExTether(usd(exI),'Tether, Circle, Paxos… left out');
@@ -1452,7 +1455,7 @@ async function page5(force){
       <td><span class="rank">${i+1}</span><img class="plogo" loading="lazy" alt=""
         src="${esc(r.logo||'')}" onerror="this.style.visibility='hidden'"><a class="sym"
         style="color:inherit;text-decoration:none" target="_blank" rel="noopener"
-        href="https://defillama.com/protocol/${encodeURIComponent(r.slug||'')}">${esc(r.name)}</a></td>
+        href="https://defillama.com/${r.chain?'chain/'+encodeURIComponent(r.name):'protocol/'+encodeURIComponent(r.slug||'')}">${esc(r.name)}</a>${r.chain?' <span class="pill">chain</span>':''}</td>
       <td style="text-align:left;color:var(--mut)">${esc(r.cat)}</td>
       <td><b>${usd(r.d30)}</b></td>
       <td class="${cls(r.ch30)}">${pct(r.ch30)}</td>
@@ -1465,7 +1468,7 @@ async function page5(force){
     const d=rows.slice(0,20);
     return Plot.plot(plotBase(p.body,{
       height:d.length*22+30, marginLeft:isNarrow()?110:150, marginRight:isNarrow()?52:60,
-      x:{grid:true,tickFormat:v=>usd(v).replace('.00',''),label:null,ticks:isNarrow()?3:4},
+      x:{grid:true,tickFormat:v=>usd(v).replace('.00',''),label:null,ticks:Math.max(2,Math.floor((cw(p.body)-200)/90))},
       y:{label:null,domain:d.map(r=>r.name),
          tickFormat:s=>s.length>(isNarrow()?16:22)?s.slice(0,isNarrow()?15:21)+'…':s},
       marks:[
@@ -1476,11 +1479,14 @@ async function page5(force){
         Plot.ruleX([0])]}));
   });
   fill(pCat,async p=>{
-    const m=d3.rollups(rows,v=>d3.sum(v,r=>r.d30),r=>r.cat)
+    /* 100 rows span ~40 categories; the sub-1% tail folds into "Other" */
+    const all=d3.rollups(rows,v=>d3.sum(v,r=>r.d30),r=>r.cat)
       .map(([cat,v])=>({cat,v})).sort((a,b)=>b.v-a.v);
+    const m=all.filter(r=>r.v/sum>=.01), rest=all.filter(r=>r.v/sum<.01);
+    if(rest.length) m.push({cat:`Other (${rest.length})`,v:d3.sum(rest,r=>r.v)});
     return Plot.plot(plotBase(p.body,{
-      height:m.length*22+30, marginLeft:isNarrow()?110:140, marginRight:isNarrow()?52:60,
-      x:{grid:true,tickFormat:v=>usd(v).replace('.00',''),label:null,ticks:isNarrow()?3:4},
+      height:m.length*22+30, marginLeft:isNarrow()?120:170, marginRight:isNarrow()?52:60,
+      x:{grid:true,tickFormat:v=>usd(v).replace('.00',''),label:null,ticks:Math.max(2,Math.floor((cw(p.body)-200)/90))},
       y:{label:null,domain:m.map(r=>r.cat)},
       marks:[
         Plot.barX(m,{x:'v',y:'cat',fill:css('--acc2')}),
@@ -1571,7 +1577,7 @@ async function boot(force){
   booting=true;
   const b=document.getElementById('refresh'); b.disabled=true; b.textContent='…';
   if(force){ mem.clear();
-    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe'&&k!==CK+'revenue')
+    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe'&&k!==CK+'revenue100')
       .forEach(k=>localStorage.removeItem(k)); }catch{} }
   try{ await Promise.all([page1(force),page2(force),page3(force),page4(force),
                            /* revenue is daily data on a 1h TTL and a 5MB fetch,
