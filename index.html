@@ -112,6 +112,7 @@ footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;
       <button class="tab" role="tab" id="t3" aria-selected="false" onclick="showPage(3)">Rates</button>
       <button class="tab" role="tab" id="t4" aria-selected="false" onclick="showPage(4)">Arb</button>
       <button class="tab" role="tab" id="t5" aria-selected="false" onclick="showPage(5)">Revenue</button>
+      <button class="tab" role="tab" id="t6" aria-selected="false" onclick="showPage(6)">Valuation</button>
     </div>
     <button class="btn" id="refresh" onclick="boot(true)">Refresh</button>
   </div>
@@ -122,6 +123,7 @@ footer{color:var(--dim);font-size:11px;padding:18px 14px 30px;text-align:center;
   <section class="page" id="page3" hidden></section>
   <section class="page" id="page4" hidden></section>
   <section class="page" id="page5" hidden></section>
+  <section class="page" id="page6" hidden></section>
 </main>
 <footer>
   Sources: CoinGecko · Binance · DefiLlama · Coin Metrics Community · Dune (optional)<br>
@@ -291,7 +293,7 @@ function plotBase(el,extra={}){
     style:{background:'transparent',color:css('--mut'),fontSize:isNarrow()?'10px':'11px'},
   },extra);
 }
-const PAGES=[1,2,3,4,5];
+const PAGES=[1,2,3,4,5,6];
 function showPage(n){
   for(const i of PAGES){
     document.getElementById('page'+i).hidden=n!==i;
@@ -303,6 +305,7 @@ function showPage(n){
   if(n===3) page3Lazy();
   if(n===4) page4Lazy();
   if(n===5) page5Lazy();
+  if(n===6) page6Lazy();
   requestAnimationFrame(()=>requestAnimationFrame(redrawVisible));
 }
 </script>
@@ -1497,6 +1500,280 @@ async function page5(force){
 }
 
 /* ============================================================
+   PAGE 6 — valuation of the Revenue tab's names
+   ============================================================ */
+/* Every name in the Revenue tab's top 100 is mapped to its token:
+   protocols via DefiLlama lite/protocols2 (a product's own geckoId, else its
+   parent's), chains via /v2/chains. Products that share a token are MERGED —
+   HYPE is valued against Hyperliquid Perps + Spot + L1 together, not against
+   one product — and the merge sums revenue across EVERY DefiLlama product on
+   that token, not only those that made the top 100.
+   Payloads (gzip on the wire): revenue ~1.1MB, fees ~1.2MB, holders revenue
+   ~0.5MB, protocols2 ~1.4MB, chains ~10KB. The aggregate is cached for an hour
+   and survives a forced refresh; token prices (CoinGecko, one call) do not. */
+const DL_Q='excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true';
+const loadValBase=force=>cache('valbase',async()=>{
+  const [rev,fee,hold,lite,chains]=await Promise.all([
+    jget(`${LL}/overview/fees?${DL_Q}&dataType=dailyRevenue`,{timeout:90000}),
+    jget(`${LL}/overview/fees?${DL_Q}`,{timeout:90000}),
+    jget(`${LL}/overview/fees?${DL_Q}&dataType=dailyHoldersRevenue`,{timeout:90000}),
+    jget(`${LL}/lite/protocols2`,{timeout:90000}),
+    jget(`${LL}/v2/chains`)]);
+  const parent=new Map((lite.parentProtocols||[]).map(p=>[p.id,p]));
+  const proto=new Map((lite.protocols||[]).map(p=>[String(p.defillamaId),p]));
+  const chainG=new Map(chains.map(c=>[c.name,{g:c.gecko_id,sym:c.tokenSymbol,tvl:c.tvl}]));
+  /* token for a fees/revenue entry: chain → chain token; protocol → own
+     geckoId, else its parent's */
+  const tok=x=>{
+    if(x.protocolType==='chain'){ const c=chainG.get(x.name); return c?.g?{g:c.g,sym:c.sym}:null; }
+    const p=proto.get(String(x.defillamaId));
+    if(p?.geckoId) return {g:p.geckoId,sym:p.symbol};
+    const par=parent.get(x.parentProtocol||p?.parentProtocol);
+    return par?.gecko_id?{g:par.gecko_id,sym:par.symbol}:null;
+  };
+  const key=x=>x.protocolType+':'+x.defillamaId;
+  const F=new Map((fee.protocols||[]).map(x=>[key(x),x]));
+  const H=new Map((hold.protocols||[]).map(x=>[key(x),x]));
+  const top=(rev.protocols||[]).filter(p=>p.total30d>0)
+    .sort((a,b)=>b.total30d-a.total30d).slice(0,REV_N);
+  const tokens=new Map(), none=[];
+  top.forEach((x,i)=>{
+    const t=tok(x), nm=x.displayName||x.name;
+    if(!t){ none.push({name:nm,rank:i+1,cat:x.category||'—',d30:x.total30d,
+      chain:x.protocolType==='chain'}); return; }
+    if(!tokens.has(t.g)) tokens.set(t.g,{g:t.g,sym:t.sym&&t.sym!=='-'?t.sym:'',
+      names:[],rank:i+1,cat:x.category||'—',logo:x.logo,
+      rev30:0,prev30:0,fee30:0,hold30:0,tvl:0,prods:0,holdKnown:false});
+    tokens.get(t.g).names.push(nm);
+  });
+  /* aggregate every product on each of those tokens */
+  for(const x of rev.protocols||[]){
+    const t=tok(x); const T=t&&tokens.get(t.g); if(!T) continue;
+    T.prods++; T.rev30+=x.total30d||0; T.prev30+=x.total60dto30d||0;
+    const f=F.get(key(x)); if(f) T.fee30+=f.total30d||0;
+    const h=H.get(key(x)); if(h){ T.hold30+=h.total30d||0; T.holdKnown=true; }
+    if(x.protocolType!=='chain') T.tvl+=proto.get(String(x.defillamaId))?.tvl||0;
+  }
+  /* a chain's TVL is everything deployed on it, not a protocol's own deposits:
+     leave it out rather than mix the two meanings in one column */
+  for(const T of tokens.values()) if(!T.tvl) T.tvl=null;
+  return {tokens:[...tokens.values()], none, llMcap:Object.fromEntries(
+    [...tokens.keys()].map(g=>{
+      const p=[...parent.values()].find(p=>p.gecko_id===g)||(lite.protocols||[]).find(p=>p.geckoId===g);
+      return [g,p?.mcap||null]; }))};
+},force,REV_TTL);
+
+const loadValMarkets=(ids,force)=>cache('valmkt',async()=>{
+  const r=await jget(`${CG}/coins/markets?vs_currency=usd&per_page=250&ids=`
+    +encodeURIComponent(ids.join(','))+'&price_change_percentage=30d');
+  return r.map(c=>({id:c.id,sym:c.symbol.toUpperCase(),price:c.current_price,
+    mcap:c.market_cap,fdv:c.fully_diluted_valuation,supply:c.circulating_supply,
+    ch30:c.price_change_percentage_30d_in_currency,img:c.image}));
+},force);
+
+/* Metcalfe: value ∝ users². NVM = market cap / (active addresses)², with
+   addresses as a 30-day average to smooth weekday swings. The absolute number
+   is not comparable across chains (address ≠ user, and that ratio differs by
+   chain), so each chain is read against its OWN 1-year median.
+   Only ETH and TRX in the top 100 have free daily active addresses (Coin
+   Metrics Community: SOL is forbidden, BNB stale since 2019, POL/HYPE absent).
+   Coin Metrics has no market cap for TRX, so history is price × today's
+   circulating supply for both — fine for slow-supply assets like these. */
+const NVM_ASSETS=[{cm:'eth',g:'ethereum',name:'Ethereum'},{cm:'trx',g:'tron',name:'Tron'}];
+const loadNvm=force=>cache('nvm',async()=>{
+  const start=new Date(Date.now()-400*864e5).toISOString().slice(0,10);
+  const r=await jget(`${CM}/timeseries/asset-metrics?assets=${NVM_ASSETS.map(a=>a.cm).join(',')}`
+    +`&metrics=AdrActCnt,PriceUSD&frequency=1d&start_time=${start}&page_size=10000`);
+  const by={};
+  for(const x of r.data||[]) (by[x.asset]??=[]).push({t:x.time.slice(0,10),
+    a:x.AdrActCnt==null?null:+x.AdrActCnt,p:x.PriceUSD==null?null:+x.PriceUSD});
+  return by;
+},force,6*60*60*1000);
+
+function nvmSeries(rows,supply){
+  const out=[];
+  for(let i=29;i<rows.length;i++){
+    const w=rows.slice(i-29,i+1).map(r=>r.a).filter(v=>v>0);
+    const p=rows[i].p; if(w.length<20||!(p>0)) continue;
+    const a=d3.mean(w);
+    out.push({d:new Date(rows[i].t),a,nvm:p*supply/(a*a)});
+  }
+  return out.slice(-365);
+}
+
+let p6done=false;
+function page6Lazy(){ if(!p6done){ p6done=true; page6(false); } }
+const mult=n=>n==null||!isFinite(n)||n<=0?'—':n>=1000?Math.round(n).toLocaleString('en-US')+'×'
+  :n>=100?n.toFixed(0)+'×':n>=10?n.toFixed(1)+'×':n.toFixed(2)+'×';
+const ann=v=>v*365/30;
+let VAL_ROWS=[], VAL_SORT={k:'ps',dir:1};
+
+async function page6(force){
+  const host=document.getElementById('page6');
+  host.innerHTML=`<div class="tiles" id="p6tiles"></div>
+    <div class="panel wide" id="p6table"></div><div class="grid" id="p6grid"></div>
+    <div class="panel wide" id="p6none" style="margin-top:12px"></div>`;
+  const tiles=document.getElementById('p6tiles'), grid=document.getElementById('p6grid');
+  const slot=k=>{const e=document.createElement('div');e.className='tile';
+    e.innerHTML=`<div class="k">${k}</div><div class="v">…</div><div class="s"></div>`;
+    tiles.appendChild(e);
+    return (v,sub,c)=>{e.querySelector('.v').textContent=v;
+      const se=e.querySelector('.s'); se.textContent=sub||''; se.className='s '+(c||'');};};
+  const tMed=slot('Median P/S'), tCheap=slot('Lowest P/S, $100M+'), tYield=slot('Top holder yield, $100M+'),
+        tMet=slot('ETH vs its Metcalfe median');
+
+  document.getElementById('p6table').innerHTML=
+    `<div class="ph"><h3>Valuation — tokens behind the Revenue tab's top ${REV_N}</h3>
+       <span class="src">CoinGecko · DefiLlama</span></div>
+     <p class="sub">Products on the same token are merged and valued together (all of the
+       token's DefiLlama products, not just those in the top ${REV_N}). Flows are the last
+       30 days × 365/30. <b>P/F</b> market cap ÷ fees · <b>P/S</b> market cap ÷ revenue ·
+       <b>P/E</b> market cap ÷ holders revenue (buybacks, burns, staking payouts — what
+       actually reaches the token) · <b>Yield</b> holders revenue ÷ market cap ·
+       <b>Take</b> revenue ÷ fees · <b>Float</b> market cap ÷ FDV. Click a header to sort.</p>
+     <div class="tw" id="p6tw"><div class="skel"></div></div>`;
+  const pMap=panel(grid,{title:'Market cap vs revenue',src:'CoinGecko · DefiLlama',
+    sub:'Both axes log. Diagonals mark P/S of 1×, 10× and 100×: below a line is cheaper than it.'});
+  const pMet=panel(grid,{title:"Metcalfe's law — NVM vs own 1y median",src:'Coin Metrics · CoinGecko',
+    sub:'Market cap ÷ (30d avg active addresses)², divided by its 1-year median. Above 1 = priced richer than usual for its network size.'});
+
+  let B,M;
+  try{ B=await retrying(()=>loadValBase(false));  /* 4MB, 1h TTL: never forced */ }
+  catch(e){ document.getElementById('p6tw').innerHTML=`<div class="state err">Could not load DefiLlama — ${esc(e.message||e)}</div>`;
+    pMap.msg('—',true); pMet.msg('—',true); return; }
+  let mkNote='';
+  try{ M=await loadValMarkets(B.tokens.map(t=>t.g).sort(),force); }
+  catch(e){ M=[]; mkNote='CoinGecko unavailable ('+(e.message||e)+') — market caps fall back to DefiLlama\'s, without FDV or price.'; }
+  const MM=new Map(M.map(c=>[c.id,c]));
+
+  VAL_ROWS=B.tokens.map(t=>{
+    const c=MM.get(t.g), mcap=c?.mcap||B.llMcap[t.g]||null, fdv=c?.fdv||null;
+    const R=ann(t.rev30), Fe=ann(t.fee30), Hd=ann(t.hold30);
+    return {...t, sym:c?.sym||t.sym, price:c?.price, ch30:c?.ch30, mcap, fdv,
+      revA:R, feeA:Fe, holdA:t.holdKnown?Hd:null,
+      revG:t.prev30?(t.rev30/t.prev30-1)*100:null,
+      pf:mcap&&Fe?mcap/Fe:null, ps:mcap&&R?mcap/R:null, fdvs:fdv&&R?fdv/R:null,
+      pe:mcap&&t.holdKnown&&Hd>0?mcap/Hd:null,
+      yld:mcap&&t.holdKnown?Hd/mcap*100:null,
+      take:Fe?R/Fe*100:null, float:mcap&&fdv?mcap/fdv*100:null,
+      mtvl:mcap&&t.tvl?mcap/t.tvl:null};
+  }).filter(r=>r.mcap);
+
+  /* NVM */
+  let NV=[];
+  try{
+    const by=await loadNvm(false);
+    NV=NVM_ASSETS.map(a=>{
+      const c=MM.get(a.g); if(!c?.supply||!by[a.cm]) return null;
+      const s=nvmSeries(by[a.cm],c.supply); if(!s.length) return null;
+      const med=d3.median(s,r=>r.nvm);
+      const cur=c.mcap/(s.at(-1).a**2);
+      return {...a,s:s.map(r=>({...r,rel:r.nvm/med})),med,cur,rel:cur/med,daa:s.at(-1).a};
+    }).filter(Boolean);
+  }catch(e){ pMet.msg('Could not load Coin Metrics — '+esc(e.message||e),true); }
+  const NVG=new Map(NV.map(n=>[n.g,n]));
+  for(const r of VAL_ROWS){ const n=NVG.get(r.g); if(n){ r.nvmRel=n.rel; r.daa=n.daa; } }
+
+  /* tiles skip microcaps: a $2M token with a one-off month of fees otherwise
+     owns every "lowest" / "highest" slot */
+  const BIG=VAL_ROWS.filter(r=>r.mcap>=1e8);
+  const ps=BIG.map(r=>r.ps).filter(v=>v>0);
+  tMed(mult(d3.median(ps)),`${ps.length} tokens over $100M cap`);
+  const cheap=[...BIG].filter(r=>r.ps>0).sort((a,b)=>a.ps-b.ps)[0];
+  tCheap(cheap?mult(cheap.ps):'—',cheap?cheap.sym+' · '+cheap.names[0]:'');
+  const yl=[...BIG].filter(r=>r.yld>0).sort((a,b)=>b.yld-a.yld)[0];
+  tYield(yl?yl.yld.toFixed(1)+'%':'—',yl?yl.sym+' · '+yl.names[0]:'');
+  const ethN=NVG.get('ethereum');
+  tMet(ethN?ethN.rel.toFixed(2)+'×':'—',ethN?(ethN.rel>1?'richer':'cheaper')+' than usual for its active addresses':'',
+       ethN?(ethN.rel>1?'down':'up'):'');
+
+  drawValTable(mkNote);
+
+  fill(pMap,async p=>{
+    const d=VAL_ROWS.filter(r=>r.revA>0&&r.mcap>0);
+    const lo=d3.min(d,r=>r.revA)/2, hi=d3.max(d,r=>r.revA)*2;
+    const lines=[1,10,100].map(k=>({k,pts:[{x:lo,y:lo*k},{x:hi,y:hi*k}]}));
+    const ymin=d3.min(d,r=>r.mcap)/2, ymax=d3.max(d,r=>r.mcap)*2;
+    const big=new Set([...d].sort((a,b)=>b.mcap-a.mcap).slice(0,isNarrow()?8:16).map(r=>r.g));
+    return Plot.plot(plotBase(p.body,{height:isNarrow()?320:400,
+      x:{type:'log',label:'Annualised revenue →',tickFormat:v=>usd(v).replace('.00',''),ticks:4,domain:[lo,hi]},
+      y:{type:'log',label:'↑ Market cap',tickFormat:v=>usd(v).replace('.00',''),ticks:5,domain:[ymin,ymax]},
+      marks:[
+        ...lines.map(l=>Plot.line(l.pts,{x:'x',y:'y',stroke:css('--dim'),strokeDasharray:'3,4',clip:true})),
+        ...lines.map(l=>Plot.text([l.pts[1]].map(q=>({x:Math.min(q.x,ymax/l.k),y:Math.min(q.y,ymax)})),
+          {x:'x',y:'y',text:()=>l.k+'×',dx:-4,dy:8,textAnchor:'end',fill:css('--dim'),clip:true})),
+        Plot.dot(d,{x:'revA',y:'mcap',r:4,fill:r=>r.cat==='Chain'?css('--acc2'):css('--acc'),fillOpacity:.75,
+          title:r=>`${r.sym} — ${r.names.join(', ')}\nmcap ${usd(r.mcap)} · rev ${usd(r.revA)}/yr · P/S ${mult(r.ps)}`}),
+        Plot.text(d.filter(r=>big.has(r.g)),{x:'revA',y:'mcap',text:'sym',dx:6,textAnchor:'start',fill:css('--fg'),fontSize:10})
+      ]}));
+  });
+
+  if(NV.length) fill(pMet,async p=>{
+    const d=NV.flatMap(n=>n.s.map(r=>({...r,name:n.name})));
+    return Plot.plot(plotBase(p.body,{height:isNarrow()?240:300,
+      color:{legend:true,domain:NV.map(n=>n.name),range:[css('--acc'),css('--warn')]},
+      y:{type:'log',label:'↑ NVM ÷ 1y median',tickFormat:v=>v+'×',grid:true},
+      x:{label:null},
+      marks:[Plot.ruleY([1],{stroke:css('--dim')}),
+        Plot.line(d,{x:'d',y:'rel',stroke:'name',strokeWidth:1.6}),
+        Plot.tip(d,Plot.pointerX({x:'d',y:'rel',stroke:'name',
+          title:r=>`${r.name} ${r.d.toISOString().slice(0,10)}\n${r.rel.toFixed(2)}× median · ${cnt(r.a)} active addr (30d avg)`}))]}));
+  });
+
+  const none=B.none;
+  document.getElementById('p6none').innerHTML=
+    `<div class="ph"><h3>No tradable token (${none.length})</h3><span class="src">DefiLlama</span></div>
+     <p class="sub">Names from the Revenue tab with no token DefiLlama can link to — private
+       companies, stablecoin issuers, wallets, block builders, chains without a token. Ratios
+       need a market price, so they are listed here with revenue only.</p>
+     <div class="tw"><table><thead><tr><th>Name</th><th>Category</th><th>Rev. rank</th>
+       <th>Revenue 30d</th><th>Run-rate</th></tr></thead><tbody>
+     ${none.map(n=>`<tr><td class="sym">${esc(n.name)}${n.chain?' <span class="pill">chain</span>':''}</td>
+       <td style="text-align:left;color:var(--mut)">${esc(n.cat)}</td><td class="na">#${n.rank}</td>
+       <td>${usd(n.d30)}</td><td>${usd(ann(n.d30))}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+const VAL_COLS=[
+  ['sym','Token',r=>r.sym],['mcap','Mkt cap',r=>usd(r.mcap)],['fdv','FDV',r=>usd(r.fdv)],
+  ['revA','Revenue/yr',r=>usd(r.revA)],['revG','Rev Δ30d',r=>pct(r.revG),r=>cls(r.revG)],
+  ['pf','P/F',r=>mult(r.pf)],['ps','P/S',r=>`<b>${mult(r.ps)}</b>`],['fdvs','FDV/S',r=>mult(r.fdvs)],
+  ['pe','P/E',r=>mult(r.pe)],['yld','Yield',r=>r.yld==null?'—':r.yld.toFixed(1)+'%'],
+  ['take','Take',r=>r.take==null?'—':r.take.toFixed(0)+'%'],
+  ['float','Float',r=>r.float==null?'—':r.float.toFixed(0)+'%'],
+  ['mtvl','Mcap/TVL',r=>mult(r.mtvl)],
+  ['nvmRel','Metcalfe',r=>r.nvmRel==null?'<span class="na">n/a</span>':r.nvmRel.toFixed(2)+'× med',
+     r=>r.nvmRel==null?'':r.nvmRel>1?'down':'up'],
+  ['ch30','Price 30d',r=>pct(r.ch30),r=>cls(r.ch30)]];
+
+function drawValTable(note){
+  const tw=document.getElementById('p6tw'); if(!tw) return;
+  const {k,dir}=VAL_SORT;
+  const rows=[...VAL_ROWS].sort((a,b)=>{
+    const x=a[k],y=b[k];
+    if(typeof x==='string'||typeof y==='string') return dir*String(x||'').localeCompare(String(y||''));
+    const nx=x==null||!isFinite(x)||(['pf','ps','fdvs','pe','mtvl'].includes(k)&&x<=0);
+    const ny=y==null||!isFinite(y)||(['pf','ps','fdvs','pe','mtvl'].includes(k)&&y<=0);
+    if(nx||ny) return nx-ny;                    /* blanks always last */
+    return dir*(x-y);
+  });
+  tw.innerHTML=`<table><thead><tr>${VAL_COLS.map(([c,l])=>
+    `<th style="cursor:pointer" onclick="sortVal('${c}')">${l}${c===k?(dir>0?' ▲':' ▼'):''}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r=>`<tr>${VAL_COLS.map(([c,,f,cf],i)=>i===0
+      ?`<td><img class="plogo" loading="lazy" alt="" src="${esc(r.logo||'')}" onerror="this.style.visibility='hidden'"><span class="sym">${esc(r.sym||r.g)}</span>
+         <div style="font-size:10.5px;color:var(--dim);max-width:220px;overflow:hidden;text-overflow:ellipsis"
+           title="${esc(r.names.join(', '))}">${esc(r.names.slice(0,2).join(', '))}${r.names.length>2?` +${r.names.length-2}`:''}</div></td>`
+      :`<td class="${cf?cf(r):''}">${f(r)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  const panelEl=document.getElementById('p6table');
+  panelEl.querySelectorAll(':scope > .note').forEach(n=>n.remove());
+  if(note){ const n=document.createElement('div'); n.className='note';
+    n.innerHTML='<span>&#9888;</span><span>'+esc(note)+'</span>'; panelEl.appendChild(n); }
+}
+function sortVal(k){
+  VAL_SORT=VAL_SORT.k===k?{k,dir:-VAL_SORT.dir}:{k,dir:['sym','pf','ps','fdvs','pe','mtvl','nvmRel'].includes(k)?1:-1};
+  drawValTable();
+}
+
+/* ============================================================
    quote tier — fast price refresh, independent of the full reload
    ============================================================ */
 /* A full refresh is expensive and CoinGecko-bound: five calls, queued 1.2s
@@ -1577,12 +1854,12 @@ async function boot(force){
   booting=true;
   const b=document.getElementById('refresh'); b.disabled=true; b.textContent='…';
   if(force){ mem.clear();
-    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe'&&k!==CK+'revenue100')
+    try{ Object.keys(localStorage).filter(k=>k.startsWith(CK)&&k!==CK+'universe'&&k!==CK+'revenue100'&&k!==CK+'valbase'&&k!==CK+'nvm')
       .forEach(k=>localStorage.removeItem(k)); }catch{} }
   try{ await Promise.all([page1(force),page2(force),page3(force),page4(force),
                            /* revenue is daily data on a 1h TTL and a 5MB fetch,
                               so a forced refresh does not refetch it */
-                           p5done?page5(false):null]); }
+                           p5done?page5(false):null, p6done?page6(force):null]); }
   finally{
     booting=false; lastBoot=Date.now(); lastQuote=Date.now();
     b.disabled=false; b.textContent='Refresh';
